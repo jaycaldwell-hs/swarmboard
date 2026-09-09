@@ -441,8 +441,10 @@ class ModelGateway:
             )
         elif provider == "codex":
             from .codex_gateway import CodexGateway
+            from .persona_context import persona_snapshot
 
-            gateway = CodexGateway(timeout_seconds=float(settings.get("timeout_seconds", 180.0)))
+            gateway = CodexGateway(timeout_seconds=float(settings.get("timeout_seconds", 180.0)),
+                                   persona=persona_snapshot(settings))
         else:
             raise GatewayError(f"unsupported provider: {provider}")
         return await gateway.complete(model=model, messages=messages, sampling=merged_sampling, seed=seed)

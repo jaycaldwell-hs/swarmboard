@@ -11,6 +11,7 @@ import pytest
 from swarmboard import codex_gateway
 from swarmboard.codex_gateway import CodexGateway, safe_codex_diagnostic, validate_codex_configuration
 from swarmboard.gateways import AgentAction, GatewayError, ModelGateway, StructuredOutputError
+from swarmboard.persona_context import harness_prompt, load_persona
 
 
 MESSAGES = [
@@ -71,6 +72,57 @@ async def test_codex_dispatch_preserves_prompt_schema_and_accounts_usage(monkeyp
         assert error.value.usage.total_tokens == 25
         assert error.value.raw_output == '{"action":"reply"}'
     assert directory is not None and not directory.exists()
+
+
+@pytest.mark.asyncio
+async def test_captured_persona_seeds_fixed_environment_without_host_files(monkeypatch, tmp_path):
+    originals = {"AGENTS.md": b"\xef\xbb\xbfMy own instructions.\r\n  ",
+                 "memory.md": "My memory: café.\r\n\t".encode()}
+    for name, content in originals.items():
+        (tmp_path / name).write_bytes(content)
+    snapshot = load_persona(tmp_path)
+    system = harness_prompt(snapshot, handle="ada")
+    # Later disk edits must not replace the state captured for this turn.
+    (tmp_path / "memory.md").write_text("A newer unrelated memory")
+    (tmp_path / "host-secret.txt").write_text("private unrelated host file")
+    directory = None
+
+    async def launch(*args, **kwargs):
+        nonlocal directory
+        directory = Path(args[args.index("--cd") + 1])
+        assert {path.name for path in directory.iterdir()} == {
+            "AGENTS.md", "memory.md", "instructions.md", "action.schema.json"}
+        for name, content in originals.items():
+            assert (directory / name).read_bytes() == content
+            assert (directory / name).stat().st_mode & 0o777 == 0o400
+        assert (directory / "instructions.md").read_bytes() == system.encode()
+        assert "project_doc_max_bytes=0" in args  # No duplicate or ambient AGENTS loading.
+        for feature in codex_gateway._DISABLED_FEATURES:
+            assert any(args[index:index + 2] == ("--disable", feature) for index in range(len(args) - 1))
+        Path(args[args.index("--output-last-message") + 1]).write_text(AgentAction(action="pass").model_dump_json())
+        return SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(b'{"type":"turn.completed"}\n', b"")))
+
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", launch)
+    agent = SimpleNamespace(provider="codex", model="gpt-6-astra",
+                            settings={"persona_harness": snapshot.model_dump()})
+    result = await ModelGateway().complete(agent, [
+        {"role": "system", "content": system}, {"role": "user", "content": "Board context"}])
+    assert result.response_metadata["persona_environment"] == {"mode": "fixed", "files": snapshot.file_manifest}
+    assert snapshot.source not in repr(result)
+    assert directory is not None and not directory.exists()
+    assert (tmp_path / "memory.md").read_text() == "A newer unrelated memory"
+
+
+@pytest.mark.asyncio
+async def test_persona_environment_cannot_diverge_from_captured_prompt(monkeypatch, tmp_path):
+    (tmp_path / "AGENTS.md").write_text("My instructions")
+    (tmp_path / "memory.md").write_text("My memory")
+    snapshot = load_persona(tmp_path)
+    launch = AsyncMock()
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(GatewayError, match="do not match"):
+        await CodexGateway(persona=snapshot).complete(model="gpt-6-astra", messages=MESSAGES)
+    launch.assert_not_called()
 
 
 @pytest.mark.asyncio

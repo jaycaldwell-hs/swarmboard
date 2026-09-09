@@ -8,7 +8,7 @@ from .models import Event, Post, Thread
 from .repository import InvalidStateError
 from .stimuli import plan_reactive_stimuli
 from .context_views import participant_posts
-from .persona_context import board_delivery
+from .persona_context import ada_environment_prompt, board_delivery
 
 OPENING = "You share this board with the other participants. Decide what you want to explore and how you want to interact."
 INTERFACE = """You are a participant in a shared, persistent board.
@@ -26,6 +26,11 @@ Return one JSON action matching the supplied schema. Actions operate on the boar
 
 def enabled(run) -> bool:
     return bool(run and run.config.get("interaction_mode") == "autonomous")
+
+
+def free_collaboration(run) -> bool:
+    return bool(enabled(run) and run.config.get("session_type", "collaboration") == "collaboration"
+                and run.config.get("cadence", "free") == "free")
 
 
 def create_session(repo, *, agents, title="Open board", body=OPENING, seed=None, limits=None, continuous=True, cadence_mode="free", author_handle="human", session_type="collaboration", policy="production"):
@@ -54,7 +59,8 @@ def seed_invitation(repo, run, thread, post, *, key):
         return
     for plan in plan_reactive_stimuli(post.body,
             repo.list_agents(enabled_only=True, agent_ids=run.config["agent_ids"]),
-            default_kind="human_post", default_priority=5):
+            default_kind="human_post", default_priority=5,
+            target_priority_boost=10 if free_collaboration(run) else 0):
         repo.add_stimulus(run_id=run.id, thread_id=thread.id, source_post_id=post.id,
                           kind=plan.kind, target_agent_id=plan.target_agent_id,
                           priority=plan.priority, payload=plan.payload,
@@ -62,6 +68,8 @@ def seed_invitation(repo, run, thread, post, *, key):
 
 
 def prompt(agent, snapshot, *, run=None):
+    if snapshot is not None and agent.handle == "ada":
+        return ada_environment_prompt(snapshot, cadence_mode=cadence.enabled(run))
     interface = cadence.INTERFACE if cadence.enabled(run) else INTERFACE
     identity = f"\nYour handle is @{agent.handle}.\n"
     if snapshot is not None:

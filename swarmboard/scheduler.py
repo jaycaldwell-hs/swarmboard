@@ -116,6 +116,7 @@ class SchedulerConfig:
     consecutive_turn_cap: int | None = None
     cooldowns: bool = True
     dormancy: bool = True
+    ada_opportunity_multiplier: float = 1.0
 
 
 @dataclass(slots=True)
@@ -127,6 +128,7 @@ class CandidateScore:
     eligible: bool
     components: dict[str, float] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
+    selection_weight: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -386,8 +388,31 @@ class WeightedFairScheduler:
 
     def _weighted_pick(self, candidates: Sequence[CandidateScore], rng: random.Random) -> CandidateScore:
         minimum = min(candidate.score for candidate in candidates)
-        weights = [max(self.config.minimum_score, candidate.score - minimum + self.config.minimum_score) for candidate in candidates]
+        weights = []
+        for candidate in candidates:
+            weight = max(self.config.minimum_score, candidate.score - minimum + self.config.minimum_score)
+            if candidate.handle == "ada":
+                weight *= self.config.ada_opportunity_multiplier
+            candidate.selection_weight = weight
+            weights.append(weight)
         return rng.choices(list(candidates), weights=weights, k=1)[0]
+
+
+def overlooked_participant(agents: Sequence[Any], opportunity_agent_ids: Sequence[str]) -> tuple[Any, int, int] | None:
+    """Choose deterministically among eligible voices overdue for an opportunity.
+
+    Passes count as opportunities. Ada becomes overdue after two other turns;
+    peers after three. Normalized wait gives Ada more frequent opportunities,
+    while every waiting participant's priority continues to grow.
+    """
+    last_turn = {agent_id: index for index, agent_id in enumerate(opportunity_agent_ids)}
+    overdue = []
+    for agent in agents:
+        wait = len(opportunity_agent_ids) - last_turn.get(agent.id, -1) - 1
+        threshold = 2 if agent.handle == "ada" else 3
+        if wait >= threshold:
+            overdue.append((agent, wait, threshold))
+    return max(overdue, key=lambda item: (item[1] / item[2], item[1], item[0].handle, item[0].id)) if overdue else None
 
 
 __all__ = [

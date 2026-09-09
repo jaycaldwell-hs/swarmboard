@@ -27,19 +27,23 @@ def persona_directory(tmp_path: Path) -> Path:
     return directory
 
 
-def test_ada_delivery_rule_follows_unchanged_files_and_is_scoped_to_ada(tmp_path: Path) -> None:
+def test_ada_fixed_environment_uses_files_without_adding_personality(tmp_path: Path) -> None:
     snapshot = load_persona(persona_directory(tmp_path))
     before = snapshot.model_dump_json()
     ada_prompt = harness_prompt(snapshot, handle="ada")
     other_prompt = harness_prompt(snapshot, handle="another_persona")
 
-    assert ada_prompt.count(ADA_BOARD_DELIVERY) == 1
-    assert ada_prompt.index(ADA_BOARD_DELIVERY) > ada_prompt.rindex("</persona_file>")
-    assert "social-media-brusque: concise, direct, dry, and casual." in ADA_BOARD_DELIVERY
-    assert "1–3 short sentences" not in ADA_BOARD_DELIVERY
-    assert "Keep your existing personality and priorities" in ADA_BOARD_DELIVERY
-    assert "without forced memes" not in ADA_BOARD_DELIVERY
-    assert "Keep the required JSON format unchanged." in ADA_BOARD_DELIVERY
+    assert ADA_BOARD_DELIVERY not in ada_prompt
+    assert "Your handle on this board is @ada." in ada_prompt
+    assert "supplied in full and unchanged. Follow these files." in ada_prompt
+    assert "This environment is fixed: board actions do not modify the files." in ada_prompt
+    assert ada_prompt.index("Board interface:") > ada_prompt.rindex("</persona_file>")
+    assert "Return one JSON action matching the supplied schema." in ada_prompt
+    for imposed in ("Draw your personality", "Board-post delivery:", "social-media-brusque",
+                    "Choose your own agenda", "conversational style", "required consensus"):
+        assert imposed not in ada_prompt
+    assert "Draw your personality, voice, priorities, and interaction style" in other_prompt
+    assert "Swarmboard interface for @another_persona." in other_prompt
     assert ADA_BOARD_DELIVERY not in other_prompt
     for prompt in (ada_prompt, other_prompt):
         assert f'<persona_file name="AGENTS.md">\n{snapshot.instructions}\n</persona_file>' in prompt
@@ -58,8 +62,9 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
         assert snapshot.memory in messages[0].content
         assert "not an assistant, panelist" not in messages[0].content
         assert messages[0].content.startswith(harness_prompt(snapshot, handle="ada"))
-        assert ADA_BOARD_DELIVERY in messages[0].content
-        assert messages[0].content.index(ADA_BOARD_DELIVERY) < messages[0].content.index("The exact JSON Schema is:")
+        assert ADA_BOARD_DELIVERY not in messages[0].content
+        assert "Draw your personality" not in messages[0].content
+        assert "Choose your own agenda" not in messages[0].content
         assert "INVENTED_PERSONALITY" not in messages[0].content
         assert "INVENTED_ROLE" not in messages[0].content
         context = json.loads(messages[1].content.split("\n", 1)[1])
@@ -67,7 +72,7 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
         assert next(peer for peer in context["participants"] if peer["handle"] == "ada") == {"handle": "ada"}
         assert context["persona_snapshot"]["sha256"] == snapshot.digest
         assert context["persona_snapshot"]["files"] == snapshot.file_manifest
-        assert context["persona_snapshot"]["prompt_version"] == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada")
+        assert context["persona_snapshot"]["prompt_version"] == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada", file_backed=True)
         return AgentAction(action="reply", body="@wintermute, what would you explore first?", intent="clarify")
 
     def peer_reply(agent, messages):
@@ -85,7 +90,7 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
         assert "compare two possible weekend plans" in messages[1].content
         # Even if source files changed, this registration keeps its captured text.
         assert snapshot.memory in messages[0].content
-        assert ADA_BOARD_DELIVERY in messages[0].content
+        assert ADA_BOARD_DELIVERY not in messages[0].content
         assert "Changed on disk" not in messages[0].content
         return AgentAction(action="pass")
 
@@ -119,8 +124,8 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
                 turns = list(session.scalars(select(Turn).where(Turn.agent_id == agent["id"])))
                 assert len(turns) == 2
                 assert all(snapshot.memory in json.loads(turn.prompt)[0]["content"] for turn in turns)
-                assert all(ADA_BOARD_DELIVERY in json.loads(turn.prompt)[0]["content"] for turn in turns)
-                assert all(turn.prompt_version == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada") for turn in turns)
+                assert all(ADA_BOARD_DELIVERY not in json.loads(turn.prompt)[0]["content"] for turn in turns)
+                assert all(turn.prompt_version == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada", file_backed=True) for turn in turns)
             rerun = (await client.post(f"/api/runs/{run['id']}/rerun")).json()
             # Counterfactual reruns preserve participant selection too.
             with app.state.session_factory() as session:

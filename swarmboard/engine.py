@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from contextlib import suppress
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, Sequence
@@ -57,7 +58,7 @@ from .personas import SYSTEM_PROMPT
 from .persona_context import HARNESS_PROMPT_VERSION, board_delivery, delivery_prompt_version, harness_prompt, persona_snapshot
 from .policies import ActionPolicy
 from .repository import ClaimConflictError, InvalidStateError, Repository
-from .scheduler import CandidateScore, SchedulingDecision, WeightedFairScheduler
+from .scheduler import CandidateScore, SchedulingDecision, WeightedFairScheduler, overlooked_participant
 from .stimuli import plan_reactive_stimuli
 
 
@@ -341,7 +342,61 @@ class SwarmEngine:
         return WeightedFairScheduler(replace(self.scheduler.config,
             ping_pong_limit=0, allow_consecutive_posts=True,
             role_injection_probability=0, role_injection_weight=0,
-            recent_penalty=0, domination_penalty=0))
+            recent_penalty=0, domination_penalty=0,
+            ada_opportunity_multiplier=2.0 if autonomy.free_collaboration(run) else 1.0))
+
+    def _invite_overlooked_participant(self, repo, run, post, parent_stimulus, *, event_id):
+        """Persist one overdue opportunity alongside a normal free-board post."""
+        if (not autonomy.free_collaboration(run) or run.state != RunState.RUNNING.value
+                or parent_stimulus.payload.get("forced") or parent_stimulus.payload.get("free_fairness")
+                or repo.run_budget_exhaustion(run, now=self._virtual_now(run))):
+            return
+        session = repo.session
+        pending = list(session.scalars(select(Stimulus).where(
+            Stimulus.run_id == run.id,
+            Stimulus.state.in_([StimulusState.PENDING.value, StimulusState.CLAIMED.value,
+                               StimulusState.PROCESSING.value]),
+            Stimulus.id != parent_stimulus.id,
+        )))
+        if any(item.payload.get("free_fairness") or item.payload.get("forced") for item in pending):
+            return
+        # Older queued human requests may predate the higher input priority.
+        for item in pending:
+            source = session.get(Post, item.source_post_id) if item.source_post_id else None
+            if item.target_agent_id and source is not None and source.author_type == AuthorType.HUMAN.value:
+                return
+        thread = repo.get_thread(post.thread_id)
+        generated_posts = session.scalar(select(func.count(Post.id)).where(
+            Post.thread_id == thread.id, Post.author_type == AuthorType.AGENT.value,
+            Post.metadata_json["is_inherited"].as_boolean().is_not(True),
+        )) or 0
+        if (thread.status != ThreadStatus.ACTIVE.value or generated_posts >= min(run.per_thread_quota,
+                run.config.get("inherited_thread_quota_remaining", run.per_thread_quota))):
+            return
+        agents = [self._turn_agent(session, run, agent) for agent in repo.list_agents(
+            enabled_only=True, agent_ids=run.config.get("agent_ids"))]
+        remaining = self._agent_quota_remaining(session, run, agents)
+        agents = [agent for agent in agents if agent.id not in run.config.get("unavailable_agent_ids", [])
+                  and agent.permissions.get("speak", agent.permissions.get("can_post", True))
+                  and remaining[agent.id] > 0]
+        opportunities = list(session.scalars(select(Turn.agent_id).where(
+            Turn.run_id == run.id).order_by(Turn.started_at, Turn.id)))
+        overdue = overlooked_participant(agents, opportunities)
+        if overdue is None:
+            return
+        agent, waited, threshold = overdue
+        stimulus = repo.add_stimulus(
+            run_id=run.id, thread_id=post.thread_id, source_post_id=post.id,
+            triggering_event_id=event_id, kind=StimulusKind.NEW_EVIDENCE,
+            target_agent_id=agent.id, priority=11, max_attempts=1,
+            cascade_depth=parent_stimulus.cascade_depth + 1,
+            payload={"free_fairness": True, "reason": "overlooked_participant",
+                     "waited_turns": waited, "overdue_after_turns": threshold},
+            dedupe_key=f"free-fairness:{post.id}",
+        )
+        repo.add_event("scheduler.fairness_invited", run_id=run.id, thread_id=post.thread_id,
+                       post_id=post.id, agent_id=agent.id, stimulus_id=stimulus.id,
+                       payload={"waited_turns": waited, "overdue_after_turns": threshold})
 
     def _policy_for(self, run):
         if run and run.config.get("session_type") == "research":
@@ -988,6 +1043,8 @@ class SwarmEngine:
                         quota_remaining=quota_remaining,
                         now=self._virtual_now(run),
                     )
+                    if autonomy.free_collaboration(run) and stimulus.payload.get("free_fairness"):
+                        decision.reason = "overlooked participant opportunity; " + decision.reason
                     if thread.status == ThreadStatus.DORMANT.value and decision.wake_allowed:
                         repo.wake_thread(thread.id, reason=stimulus.kind)
 
@@ -1085,11 +1142,31 @@ class SwarmEngine:
                                 agent=agent,
                             )
                             captured_prompt = None
+                            captured_prompt_version = None
                             if stimulus.payload.get("reuse_turn_id"):
                                 original = repo.get_turn(stimulus.payload["reuse_turn_id"])
                                 captured_prompt = original.prompt
+                                captured_prompt_version = original.prompt_version
                                 messages = self._decode_prompt(captured_prompt)
-                                current_configuration = context["agent_snapshot"]
+                                current_configuration = deepcopy(context["agent_snapshot"])
+                                # Exact prompt reuse also fixes the file environment.
+                                # Keep current transport/model/sampling choices, but
+                                # never mount a newer persona beside an old prompt.
+                                original_agent = (original.context_snapshot or {}).get("agent_snapshot", {})
+                                original_configuration = original_agent.get("configuration", {})
+                                original_settings = original_configuration.get("settings", {})
+                                if "persona" in original_configuration:
+                                    current_configuration["configuration"]["persona"] = original_configuration["persona"]
+                                runtime_settings = current_configuration["configuration"]["settings"]
+                                if original_settings.get("persona_harness") is not None:
+                                    runtime_settings["persona_harness"] = deepcopy(original_settings["persona_harness"])
+                                else:
+                                    # Legacy turns can retain the complete prompt
+                                    # without having captured reconstructable files.
+                                    runtime_settings.pop("persona_harness", None)
+                                original_identity = original_agent.get("persona") or (original.context_snapshot or {}).get("persona_snapshot")
+                                if original_identity:
+                                    current_configuration["persona"] = deepcopy(original_identity)
                                 context = dict(original.context_snapshot)
                                 context["agent_snapshot"] = current_configuration
                                 memory_ids = list(original.retrieved_memory_ids)
@@ -1110,7 +1187,8 @@ class SwarmEngine:
                                     ensure_ascii=False,
                                     separators=(",", ":"),
                                 ),
-                                prompt_version=context.get("prompt_version") or context.get("persona_snapshot", {}).get("prompt_version", self.config.prompt_version),
+                                prompt_version=captured_prompt_version if captured_prompt is not None else (
+                                    context.get("prompt_version") or context.get("persona_snapshot", {}).get("prompt_version", self.config.prompt_version)),
                                 provider=agent.provider,
                                 model=agent.model,
                                 sampling_settings=sampling,
@@ -1241,7 +1319,7 @@ class SwarmEngine:
             system_prompt = autonomy.prompt(agent, snapshot, run=run)
         if agent.handle == "ada":
             base_version = context.get("prompt_version") or context.get("persona_snapshot", {}).get("prompt_version", self.config.prompt_version)
-            context["prompt_version"] = delivery_prompt_version(base_version, handle=agent.handle)
+            context["prompt_version"] = delivery_prompt_version(base_version, handle=agent.handle, file_backed=snapshot is not None)
             if "persona_snapshot" in context:
                 context["persona_snapshot"]["prompt_version"] = context["prompt_version"]
         system = (
@@ -1862,6 +1940,9 @@ class SwarmEngine:
                                 cascade_depth=parent_stimulus.cascade_depth + 1,
                                 dedupe_key=f"cascade:{post_id}:{plan.dedupe_label}",
                             )
+                        self._invite_overlooked_participant(
+                            repo, run, write.post, parent_stimulus, event_id=write.event.id,
+                        )
                 events = self._events_after(session, before)
         await self._publish_many(events)
         if post_id and turn.run_id:
@@ -2048,7 +2129,8 @@ class SwarmEngine:
             if cadence.enabled(active_run):
                 cadence.complete_slot(repo, active_run, stimulus, turns)
             fixed_cadence = cadence.enabled(active_run)
-            if not fixed_cadence and not made_posts and noncontributing and thread.status == ThreadStatus.ACTIVE.value:
+            fair_invitation = autonomy.free_collaboration(active_run) and stimulus.payload.get("free_fairness")
+            if not fixed_cadence and not fair_invitation and not made_posts and noncontributing and thread.status == ThreadStatus.ACTIVE.value:
                 run = repo.get_run(stimulus.run_id)
                 attempted = set(stimulus.payload.get("attempted_agent_ids", []))
                 attempted.update(turn.agent_id for turn in turns)

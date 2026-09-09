@@ -40,6 +40,7 @@ def plan_reactive_stimuli(
     default_priority: float,
     exclude_agent_id: str | None = None,
     reply_to_agent_id: str | None = None,
+    target_priority_boost: float = 0,
 ) -> list[StimulusPlan]:
     """Turn post content into durable, non-overlapping response reasons.
 
@@ -62,7 +63,7 @@ def plan_reactive_stimuli(
             StimulusPlan(
                 kind=StimulusKind.MENTION.value,
                 target_agent_id=agent_id,
-                priority=10.0,
+                priority=10.0 + target_priority_boost,
                 payload={"reason": "direct_mention", "mentioned_handle": handle},
                 dedupe_label=f"mention:{agent_id}",
             )
@@ -76,7 +77,7 @@ def plan_reactive_stimuli(
             return [StimulusPlan(
                 kind=StimulusKind.MENTION.value,
                 target_agent_id=reply_to_agent_id,
-                priority=9.0,
+                priority=9.0 + target_priority_boost,
                 payload={"reason": "reply_to_author"},
                 dedupe_label=f"reply:{reply_to_agent_id}",
             )]

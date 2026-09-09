@@ -50,14 +50,17 @@ async def test_agents_route_self_replies_create_threads_and_change_threads():
         seen.append(a.handle)
         return AgentAction(action='new_thread',title='Another direction',body='@ada there is another idea.',intent='clarify')
     def cross_thread(a,m):
+        nonlocal parent_id
         seen.append(a.handle)
         context=json.loads(m[-1].content.split('\n',1)[1])
         assert len(context['environment']['board_threads'])==3
+        other_thread = next(t for t in context['environment']['board_threads'] if t['id'] != context['thread']['id'])
+        parent_id = other_thread['recent_posts'][-1]['id']
         return AgentAction(action='reply',parent_post_id=parent_id,body='@peer returning to the earlier project.',intent='support')
     gateway=ScriptedGateway(first,follow_self,repeat_self,new_topic,cross_thread)
     engine=SwarmEngine(factory,gateway=gateway)
     for _ in range(5):await engine.step(rid)
-    assert seen==['ada','peer','peer','peer','ada']
+    assert seen==['ada','peer','peer','ada','peer']
     with factory() as s:
         repo=Repository(s);report=sessions.activity(repo,rid)
         assert report['metrics']['new_thread']==2 and report['metrics']['failed_turns']==0

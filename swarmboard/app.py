@@ -405,6 +405,7 @@ def _add_post_stimuli(
         default_priority=default_priority,
         exclude_agent_id=post.author_agent_id,
         reply_to_agent_id=participant_post(parent).author_agent_id if parent is not None else None,
+        target_priority_boost=10 if autonomy.free_collaboration(run) and post.author_type == "human" else 0,
     )
     stimuli = [
         repo.add_stimulus(

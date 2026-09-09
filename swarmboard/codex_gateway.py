@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .credentials import validate_sampling
+from .persona_context import PersonaSnapshot
 from .gateways import (
     ChatMessage, GatewayError, GatewayResult, StructuredOutputError, TokenUsage,
     _messages_payload, _token_count, action_json_schema, parse_agent_action, provider_error_category,
@@ -161,15 +162,16 @@ class CodexGateway:
     """Run one ephemeral, read-only Codex turn with the board action schema.
 
     Local turns reuse saved CLI authentication; hosted turns use a server key.
-    Each turn gets a fresh temporary working
-    directory and the captured board system prompt as its instruction file.
+    Each turn gets a fresh temporary working directory seeded with its captured
+    persona files and the exact board system prompt as its instruction file.
     Host integrations and execution tools are disabled for board inference.
     """
 
     provider = "codex"
 
-    def __init__(self, *, timeout_seconds: float = 180.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 180.0, persona: PersonaSnapshot | None = None) -> None:
         self.timeout_seconds = timeout_seconds
+        self.persona = persona
 
     async def complete(
         self,
@@ -195,6 +197,12 @@ class CodexGateway:
         conversation = [item for item in payload if item["role"] != "system"]
         if not system or not conversation:
             raise GatewayError("Codex requires system instructions and discussion context")
+        if self.persona is not None:
+            # The captured prompt is authoritative, including during retries and
+            # resampling. Never seed a newer or unrelated file snapshot beside it.
+            for name, content in (("AGENTS.md", self.persona.instructions), ("memory.md", self.persona.memory)):
+                if f'<persona_file name="{name}">\n{content}\n</persona_file>' not in system:
+                    raise GatewayError("Captured persona files do not match the turn instructions", category="configuration")
         # The engine supplies one user context; retain roles for retry history.
         prompt = conversation[0]["content"] if len(conversation) == 1 and conversation[0]["role"] == "user" else json.dumps(conversation, ensure_ascii=False)
         started = time.perf_counter()
@@ -203,6 +211,11 @@ class CodexGateway:
             instructions = root / "instructions.md"
             schema = root / "action.schema.json"
             output = root / "action.json"
+            if self.persona is not None:
+                for name, content in (("AGENTS.md", self.persona.instructions), ("memory.md", self.persona.memory)):
+                    path = root / name
+                    path.write_bytes(content.encode("utf-8"))
+                    path.chmod(0o400)
             instructions.write_bytes(system.encode("utf-8"))
             schema.write_text(json.dumps(action_json_schema()), encoding="utf-8")
             command = [
@@ -301,6 +314,8 @@ class CodexGateway:
                     "reasoning_effort": effort,
                     "thread_id": next((event.get("thread_id") for event in events if event.get("type") == "thread.started"), None),
                     "cached_input_tokens": cached_input_tokens,
+                    **({"persona_environment": {"mode": "fixed", "files": self.persona.file_manifest}}
+                       if self.persona is not None else {}),
                     "seed_supported": False, "max_output_tokens_enforced": False,
                 },
             )

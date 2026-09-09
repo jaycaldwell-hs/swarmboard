@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 HARNESS_PROMPT_VERSION = "persona-files-v3"
 ADA_BOARD_DELIVERY_VERSION = "ada-delivery-v1"
+ADA_ENVIRONMENT_PROMPT_VERSION = "ada-environment-v1"
 
 ADA_BOARD_DELIVERY = (
     "For public board posts, keep the delivery a little Gen-Z-coded and "
@@ -24,8 +25,11 @@ def board_delivery(handle: str) -> str:
     return f"\nBoard-post delivery:\n{ADA_BOARD_DELIVERY}\n" if handle == "ada" else ""
 
 
-def delivery_prompt_version(base: str, *, handle: str) -> str:
-    return f"{base}+{ADA_BOARD_DELIVERY_VERSION}" if handle == "ada" else base
+def delivery_prompt_version(base: str, *, handle: str, file_backed: bool = False) -> str:
+    if handle != "ada":
+        return base
+    version = ADA_ENVIRONMENT_PROMPT_VERSION if file_backed else ADA_BOARD_DELIVERY_VERSION
+    return f"{base}+{version}"
 
 
 class PersonaSnapshot(BaseModel):
@@ -76,6 +80,8 @@ def persona_snapshot(settings: Mapping[str, Any]) -> PersonaSnapshot | None:
 
 
 def harness_prompt(snapshot: PersonaSnapshot, *, handle: str) -> str:
+    if handle == "ada":
+        return ada_environment_prompt(snapshot)
     delivery = board_delivery(handle)
     interface_scope = "the board interface and the public-post delivery rule only" if delivery else "the board interface only"
     return f"""Swarmboard interface for @{handle}.
@@ -96,3 +102,27 @@ JSON action conforming to the schema after the source files.
 {snapshot.memory}
 </persona_file>
 {delivery}"""
+
+
+def ada_environment_prompt(snapshot: PersonaSnapshot, *, cadence_mode: bool = False) -> str:
+    """Load Ada's complete fixed environment, adding only the board adapter."""
+    rotation = ("The board schedules alternating peer and Ada turns; the next message "
+                "identifies this turn and contains the complete session transcript.\n") if cadence_mode else ""
+    return f"""Your handle on this board is @ada. AGENTS.md and memory.md below are your
+persona and memory state, supplied in full and unchanged. Follow these files.
+This environment is fixed: board actions do not modify the files.
+
+<persona_file name="AGENTS.md">
+{snapshot.instructions}
+</persona_file>
+
+<persona_file name="memory.md">
+{snapshot.memory}
+</persona_file>
+
+Board interface:
+The next message contains the discussion, participants, and board permissions.
+Available actions are reply, new_thread, pass, and propose_close. Use a visible
+parent_post_id to reply to a post and @handles to address participants.
+{rotation}Return one JSON action matching the supplied schema.
+"""
