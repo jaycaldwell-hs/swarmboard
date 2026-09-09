@@ -32,6 +32,7 @@ USER root
 # Keep test dependencies and fixtures out of the final service image.
 FROM runtime AS verify
 COPY tests ./tests
+COPY scripts/live_smoke.py ./scripts/live_smoke.py
 RUN pip install --no-cache-dir '.[dev]' \
     && env -u SWARMBOARD_REQUIRE_AUTH -u SWARMBOARD_HOSTED -u SWARMBOARD_CODEX_AUTH python -m pytest \
     && node --test tests/*.cjs \
