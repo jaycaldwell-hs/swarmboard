@@ -12,6 +12,8 @@
     filter: "all",
     search: "",
     hideResearch: false,
+    flaggedOnly: false,
+    findingsByRun: new Map(),
     replyParentId: null,
     selectedEventId: null,
     turnDetails: new Map(),
@@ -100,6 +102,10 @@
     document.getElementById("hide-research")?.addEventListener("change", event => {
       store.hideResearch = event.target.checked;
       renderThreads();
+    });
+    document.getElementById("activity-flagged-only")?.addEventListener("change", event => {
+      store.flaggedOnly = event.target.checked;
+      renderEvents();
     });
 
     dom.threadFilters?.addEventListener("click", (event) => {
@@ -192,6 +198,10 @@
       const resample = event.target.closest("[data-resample-turn]");
       if (resample) window.SwarmResearch?.openResample({turnId: resample.dataset.resampleTurn,
         onCreated: async result => { if (result.forks?.[0]) await selectThread(result.forks[0].thread_id); }});
+      const flag = event.target.closest("[data-flag-target]");
+      if (flag) window.SwarmFindings?.openFlag({runId: flag.dataset.flagRun,
+        targetType: flag.dataset.flagType, targetId: flag.dataset.flagTarget,
+        onSaved: () => loadState({threadId: store.selectedThreadId, silent: true})});
     });
 
     dom.replayRunButton?.addEventListener("click", () => {
@@ -605,10 +615,18 @@
           ${runControlsHtml(run, state)}
         </div>
         <div id="run-participant-tools"></div>
+        <div id="run-findings"></div>
       </div>`;
     window.SwarmResearch?.renderPanel(document.getElementById("run-participant-tools"), {
       run, thread: store.selectedThread, threads: store.threads, agents: store.agents,
       onChange: () => loadState({threadId: store.selectedThreadId, silent: true}),
+    });
+    const turnIds = [...new Set(store.events.filter(event => event.run_id === run.id)
+      .map(event => normalizePayload(event.payload).turn_id || event.turn_id).filter(Boolean))];
+    window.SwarmFindings?.renderPanel(document.getElementById("run-findings"), {
+      run, thread: store.selectedThread, posts: store.selectedThread.posts || [],
+      turns: turnIds.map(id => store.turnDetails.get(id) || {id}),
+      onLoaded: findings => { store.findingsByRun.set(run.id, findings); if (currentRun()?.id === run.id) renderEvents(); },
     });
   }
 
@@ -658,13 +676,16 @@
   }
 
   function renderEvents() {
-    const events = store.events.slice().sort((a, b) => eventSortValue(b) - eventSortValue(a));
+    const flags = store.findingsByRun.get(currentRun()?.id)?.flags || [];
+    const events = store.events.filter(event => !store.flaggedOnly || (event.run_id === currentRun()?.id
+      && window.SwarmFindings?.eventIsFlagged(event, flags))).sort((a, b) => eventSortValue(b) - eventSortValue(a));
     if (!events.length) {
       dom.eventTimeline.innerHTML = `
         <div class="empty-list">
-          <strong>No events recorded</strong>
-          <p>Committed board activity will appear here.</p>
+          <strong>${store.flaggedOnly ? "No flagged items in this activity window" : "No events recorded"}</strong>
+          <p>${store.flaggedOnly ? "All session flags remain available in Findings & export." : "Committed board activity will appear here."}</p>
         </div>`;
+      if (store.flaggedOnly) store.selectedEventId = null;
       if (!store.selectedEventId) renderEventInspector(null);
       return;
     }
@@ -680,6 +701,7 @@
           <span class="event-glyph" aria-hidden="true">${escapeHtml(eventGlyph(eventType))}</span>
           <span>
             <strong class="event-name">${escapeHtml(eventType.replaceAll("_", " "))}</strong>
+            ${window.SwarmFindings?.eventIsFlagged(event, flags) ? '<span class="flagged-badge">Flagged</span>' : ""}
             <span class="event-description">${escapeHtml(eventDescription(event))}</span>
           </span>
           <time class="event-time" datetime="${escapeHtml(event.created_at || "")}" title="${escapeHtml(fullDate(event.created_at))}">${escapeHtml(relativeTime(event.created_at))}</time>
@@ -728,6 +750,7 @@
         <div class="trace-stat"><dt>Committed</dt><dd title="${escapeHtml(fullDate(event.created_at))}">${escapeHtml(relativeTime(event.created_at))}</dd></div>
       </dl>
       <div class="trace-content">
+        ${event.post_id && event.run_id ? `<button class="finding-trace-action" type="button" data-flag-type="post" data-flag-target="${escapeHtml(event.post_id)}" data-flag-run="${escapeHtml(event.run_id)}">Flag this post</button>` : ""}
         <h4>Captured payload</h4>
         <pre class="trace-payload">${escapeHtml(JSON.stringify(payload, null, 2))}</pre>
       </div>`;
@@ -776,6 +799,7 @@
         ${turn.session_type === "research" ? `<div class="trace-stat"><dt>Research policy</dt><dd>${escapeHtml(turn.policy_snapshot?.profile || "production")}</dd></div><div class="trace-stat"><dt>Outcome</dt><dd>${escapeHtml(turn.outcome || turn.state)}</dd></div>` : ""}
       </dl>
       <div class="trace-content">
+        <button class="finding-trace-action" type="button" data-flag-type="turn" data-flag-target="${escapeHtml(turn.id)}" data-flag-run="${escapeHtml(turn.run_id || event.run_id)}">Flag this turn</button>
         ${turn.session_type === "research" ? `<details class="research-turn-actions"><summary>Research actions</summary><button type="button" data-resample-turn="${escapeHtml(turn.id)}">Resample this turn</button></details>` : ""}
         <section class="trace-summary-grid">
           <div>

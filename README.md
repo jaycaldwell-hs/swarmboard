@@ -325,6 +325,17 @@ files; peers receive Ada's published posts, not her private prompt.
 
 ## Verification
 
+Flag posts or turns and keep run notes from **Findings** in the Session panel.
+Tags are free text; `SWARMBOARD_SUGGESTED_FINDING_TAGS` supplies optional suggestions.
+Resolving a flag appends a new event and preserves its original text and author.
+Findings work on both session types, including completed history.
+
+Download a versioned JSONL transcript, raw event JSONL, or a ZIP bundle from the
+same panel. Exports page through the complete run. Prompts can be included or
+represented by hashes and references. Known credential values and credential-bearing
+fields are redacted throughout exported content, including raw model text; stored
+artifacts remain unchanged. See [EXPORT.md](EXPORT.md) for the schema.
+
 ```bash
 make test
 ```

@@ -7,6 +7,7 @@ from sqlalchemy import func, select
 
 from . import autonomy, sessions
 from .auth import human_handle, request_key
+from .credentials import redact
 from .models import Event, Experiment, Thread, Turn
 from .repository import InvalidStateError, Repository
 from .schemas import SessionPolicyInput
@@ -80,7 +81,7 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
     @api.get("/api/sessions/{run_id}")
     async def get_session(run_id: str):
         with factory() as session:
-            return sessions.activity(Repository(session), run_id)
+            return redact(sessions.activity(Repository(session), run_id))
 
     @api.get("/api/sessions/{run_id}/export")
     async def export_session(run_id: str):
@@ -101,7 +102,7 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
             result["posts"] = [_post_json(post) for post in session.scalars(
                 select(Post).join(Thread, Post.thread_id == Thread.id).where(Thread.run_id == run_id)
                 .order_by(Post.created_at, Post.id))]
-            return result
+            return redact(result)
 
     @api.post("/api/sessions/{run_id}/discard")
     async def discard_session(run_id: str):

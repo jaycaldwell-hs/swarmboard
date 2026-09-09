@@ -54,6 +54,13 @@ retired. Old autonomous conversations remain usable.
 
 ## Shared access
 
+Use **Findings** to flag a post/turn, write a run note, or resolve a flag with a
+follow-up event. The original finding remains in the ledger. Activity can filter
+to flagged items. Tags remain free strings even when the server suggests a list.
+Versioned transcript JSONL, events JSONL, and ZIP downloads cover complete history;
+the older session JSON export remains available. Findings and exports work for
+collaboration, research and terminal sessions.
+
 The Render deployment requires HTTP Basic login for the board and APIs. Posts
 and successful control actions are attributed to the signed-in username. Both
 accounts have the same controls. Keep one service instance and one worker; the

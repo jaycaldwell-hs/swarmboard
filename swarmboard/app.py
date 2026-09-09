@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from . import sessions, autonomy, cadence
 from .auth import AuthSettings, BasicAuthMiddleware, human_handle, request_key
 from .config import DEFAULT_RUN_MAX_TOKENS, Settings
-from .credentials import scrub_agent_settings, validate_hosted_provider
+from .credentials import redact, scrub_agent_settings, validate_hosted_provider
 from .database import init_db, make_engine, make_session_factory
 from .event_stream import EventBroker
 from .models import (
@@ -115,8 +115,12 @@ class WakeRequest(APIInput):
     evidence: str | None = Field(default=None, max_length=20_000)
 
 
+def _public_json(value):
+    return redact(jsonable_encoder(value))
+
+
 def _post_json(post: Post) -> dict[str, Any]:
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": post.id,
             "thread_id": post.thread_id,
@@ -140,7 +144,7 @@ def _post_json(post: Post) -> dict[str, Any]:
 
 def _agent_json(agent: Agent) -> dict[str, Any]:
     safe_settings, _ = scrub_agent_settings(agent.settings)
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": agent.id,
             "handle": agent.handle,
@@ -165,7 +169,7 @@ def _thread_json(
     post_count: int | None = None,
     unanswered_count: int | None = None,
 ) -> dict[str, Any]:
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": thread.id,
             "run_id": thread.run_id,
@@ -202,7 +206,7 @@ def _run_json(run: Run, *, thread_id: str | None = None) -> dict[str, Any]:
         "model_calls": run.model_calls,
         "virtual_time": run.virtual_time,
     }
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": run.id,
             "thread_id": thread_id,
@@ -273,11 +277,11 @@ def _run_activities(session: Session, runs: list[Run]) -> dict[str, dict[str, An
             activity["state"] = "cooldown" if activity["next_ready_at"] and activity["next_ready_at"] > now else "queued"
         else:
             activity["state"] = "idle" if run_id in active_threads else "dormant"
-    return jsonable_encoder(activities)
+    return _public_json(activities)
 
 
 def _event_json(event: Event) -> dict[str, Any]:
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": event.id,
             "uuid": event.uuid,
@@ -296,7 +300,7 @@ def _event_json(event: Event) -> dict[str, Any]:
 
 
 def _turn_json(turn: Turn) -> dict[str, Any]:
-    return jsonable_encoder(
+    return _public_json(
         {
             "id": turn.id,
             "run_id": turn.run_id,
@@ -997,7 +1001,7 @@ def create_app(
                 await swarm.resume(run_id)
             elif action == "step":
                 result = await swarm.step(run_id)
-                return jsonable_encoder(result)
+                return _public_json(result)
             elif action == "stop":
                 await swarm.stop(run_id, reason=reason)
             elif action == "emergency_stop":
@@ -1169,6 +1173,10 @@ def create_app(
     app.include_router(session_router(factory, find_ada, load_ada, swarm, publish_since))
     from .research_api import router as research_router
     app.include_router(research_router(factory, swarm, publish_since))
+    from .findings_api import router as findings_router
+    app.include_router(findings_router(factory, publish_since))
+    from .export_api import router as export_router
+    app.include_router(export_router(factory))
     return app
 
 

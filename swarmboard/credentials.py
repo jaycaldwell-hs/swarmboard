@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import json
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,6 +21,48 @@ _HOSTED_PROVIDERS = {
     "openrouter.ai": ("OPENROUTER_API_KEY", {"/api", "/api/v1", "/api/v1/chat/completions"}),
 }
 _HOSTED_HEADERS = frozenset({"http-referer", "x-title"})
+
+
+def redact(value: Any) -> Any:
+    """Redact known credential values recursively at human-facing boundaries.
+
+    Storage retains the original model artifact. Exports/HTTP responses may
+    contain a redacted representation, including secrets embedded in free text.
+    Environment-variable *names* remain useful and are never treated as secrets.
+    """
+    secrets: set[str] = set()
+    for name, secret in os.environ.items():
+        if re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH_USERS)", name, re.I) and secret:
+            secrets.add(secret)
+            if name == "SWARMBOARD_AUTH_USERS":
+                try:
+                    users = json.loads(secret)
+                    if isinstance(users, dict):
+                        secrets.update(password for password in users.values() if isinstance(password, str) and password)
+                except ValueError:
+                    pass
+    ordered = sorted(secrets, key=len, reverse=True)
+
+    def clean(item):
+        if isinstance(item, str):
+            for secret in ordered:
+                item = item.replace(secret, "[REDACTED]")
+                escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
+                if escaped != secret:
+                    item = item.replace(escaped, "[REDACTED]")
+            return item
+        if isinstance(item, Mapping):
+            result = {}
+            for key, content in item.items():
+                sensitive = (_is_literal_api_key(key) or str(key).strip().casefold() in _SENSITIVE_HEADERS
+                             or str(key).strip().casefold() in {"password", "secret", "access_token", "refresh_token"})
+                result[clean(str(key))] = "[REDACTED]" if sensitive and content is not None else clean(content)
+            return result
+        if isinstance(item, (list, tuple)):
+            return [clean(child) for child in item]
+        return item
+
+    return clean(value)
 
 
 def _is_literal_api_key(name: object) -> bool:

@@ -32,6 +32,7 @@ from .gateways import (
     StructuredOutputError,
     TokenUsage,
     action_json_schema,
+    captured_json,
     parse_agent_action,
 )
 from .models import (
@@ -1405,10 +1406,7 @@ class SwarmEngine:
                     last_raw = rejected_raw
                     # JSON artifacts may have unknown fields or invalid actions.
                     # Retain those fields without treating them as executable.
-                    try:
-                        parsed_action = json.loads(rejected_raw)
-                    except (ValueError, TypeError):
-                        parsed_action = None
+                    parsed_action = captured_json(rejected_raw)
                 rejected_usage = getattr(exc, "usage", None)
                 if isinstance(rejected_usage, TokenUsage):
                     aggregate_input += rejected_usage.prompt_tokens

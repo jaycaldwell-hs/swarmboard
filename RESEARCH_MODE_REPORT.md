@@ -87,3 +87,34 @@ Phase 1 gate: `make test` passed — 385 Python tests and 11 Node tests.
   mapping, historical participant visibility and conditional frontend controls.
 
 Phase 2 gate: `make test` passed — 424 Python tests and 16 Node tests.
+
+## Phase 3 — Findings capture and export (item 8)
+
+- Added event-only findings services and APIs: post/turn flags, append-only flag
+  resolutions, run notes, run findings projection and suggested-tag settings.
+  Events are `research.flag_created`, `research.flag_resolved` and
+  `research.note_created`. Authored text/tags and original events are immutable;
+  terminal history can be annotated without changing conversation content.
+- Added complete keyset-paged JSONL transcript/event exports and a ZIP bundle
+  with findings. Exports use a consistent database read snapshot, versioned header,
+  turns and posts, prompt/raw hashes, lineage, inherited markers, scheduler trace,
+  usage and findings. `include_prompts=false` retains hashes and turn references.
+  Existing JSON session export remains compatible.
+- Added recursive credential redaction across all exported fields and public
+  serializers, including secrets embedded in raw output, prompts and annotations.
+  Verbatim storage takes precedence internally; credential redaction takes
+  precedence in downloads, with original hashes and redaction marking.
+  Provider failures now retain returned refusal text/usage when available.
+- UI adds findings/notes/resolution controls and flagged-only Activity filtering
+  to both session types, plus transcript/events/ZIP links and prompt inclusion.
+  Updated README, architecture, SESSIONS, `.env.example`, and new EXPORT.md.
+- Tests cover immutable resolution, author identity/idempotency, terminal/both-type
+  annotations, free tags, full multi-page exports, failures and invalid artifacts,
+  fork/resample lineage, and planted credential values across download surfaces.
+- Visual QA limitation: isolated temporary test server starts, but the installed
+  browser runtime cannot initialize (`node:process` import is prohibited by its
+  execution tool). No browser controls were used after that failure; API and
+  frontend DOM/interaction contract tests remain available. No production data
+  or live models were used.
+
+Phase 3 gate: `make test` passed — 442 Python tests and 21 Node tests.

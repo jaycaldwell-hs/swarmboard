@@ -220,6 +220,6 @@
   }
 
   window.SwarmResearch = {creationOptions, bind, isResearch, renderPanel, openFork, openResample,
-    navigationHtml, threadEntries, forcePayload, forkPayload, resamplePayload, participantViewUrl};
+    navigationHtml, threadEntries, forcePayload, forkPayload, resamplePayload, participantViewUrl, api, commandDialog};
   document.addEventListener("DOMContentLoaded", () => document.querySelectorAll("[data-research-options]").forEach(bind));
 })();

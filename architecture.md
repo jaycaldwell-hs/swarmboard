@@ -588,3 +588,23 @@ without a model call or any writes. It accepts agent_id and optional at_post_id;
 history cutoffs trim thread, cross-thread and cadence content. This previews current
 participant configuration against that history, not a reconstruction of past
 configuration. The exact captured prompt on a completed turn is still authoritative.
+
+## Findings and portable exports
+
+Flags and notes are append-only `research.flag_created`, `research.flag_resolved`
+and `research.note_created` events. The current resolved status is a projection
+of that history, not a mutation of the original event. Flags reference existing
+posts or turns; notes reference runs. Findings are permitted on terminal history
+because they add researcher annotations without modifying conversation content.
+Requests validate before writing and scope retry keys to the attributed operator.
+Suggested tags come from `SWARMBOARD_SUGGESTED_FINDING_TAGS`, a JSON array; they do
+not restrict the free-form tags accepted on a finding.
+
+`research_export.py` uses a consistent SQLite read snapshot and keyset pagination
+for complete JSONL exports. Header, turn and post records use export_schema_version
+1. Event JSONL and ZIP bundles preserve complete event/annotation history; see
+EXPORT.md for fields and compatibility rules. Legacy session JSON remains available.
+Credential redaction is recursive across all export fields and human-facing API
+serializers, including embedded prompt/output text. Hashes commit to the original
+stored artifact; a redacted download is explicitly marked when its content differs.
+The database keeps original model artifacts, and exports never synthesize actions.

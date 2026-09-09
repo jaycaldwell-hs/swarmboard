@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from . import research, sessions
 from .auth import human_handle, request_key
+from .credentials import redact
 from .models import Event, Post, Run, Stimulus, Thread
 from .repository import InvalidStateError, Repository
 
@@ -75,7 +76,7 @@ def router(factory, swarm, publish_since):
                 should_start = session.get(Run, result["run_id"]).state == "created"
             if should_start:
                 await swarm.start(result["run_id"])
-        return result
+        return redact(result)
 
     @api.post("/api/runs/{run_id}/force-turn", status_code=201)
     async def force_turn(run_id: str, body: ForceRequest, request: Request):
@@ -87,7 +88,7 @@ def router(factory, swarm, publish_since):
             result = {"stimulus_id": stimulus.id, "run_id": run_id, "thread_id": stimulus.thread_id}
         await publish_since(before)
         swarm.notify(run_id)
-        return result
+        return redact(result)
 
     @api.post("/api/turns/{turn_id}/resample", status_code=201)
     async def resample(turn_id: str, body: ResampleRequest, request: Request):
@@ -97,7 +98,7 @@ def router(factory, swarm, publish_since):
                 reuse_prompt=body.reuse_prompt, author=human_handle(request),
                 idempotency_key=request_key(request, f"resample:{turn_id}:{body.idempotency_key}"))
         await publish_since(before)
-        return result
+        return redact(result)
 
     @api.get("/api/threads/{thread_id}/forks")
     async def forks_of(thread_id: str):
@@ -150,9 +151,9 @@ def router(factory, swarm, publish_since):
                 context = original.context_snapshot
                 messages = swarm._decode_prompt(prompt)
                 memories = original.retrieved_memory_ids
-            return {"run_id": run.id, "thread_id": thread.id, "agent_id": agent.id,
+            return redact({"run_id": run.id, "thread_id": thread.id, "agent_id": agent.id,
                     "messages": [m.model_dump() for m in messages], "context": context, "prompt": prompt,
                     "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "memory_ids": memories,
-                    "at_post_id": at_post_id, "view_kind": "participant_context_preview"}
+                    "at_post_id": at_post_id, "view_kind": "participant_context_preview"})
 
     return api

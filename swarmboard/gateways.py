@@ -94,11 +94,15 @@ class StructuredOutputError(ValueError):
 class GatewayError(RuntimeError):
     """A sanitized provider failure safe to retain in a Turn error record."""
 
-    def __init__(self, message: str, *, retryable: bool = False, status_code: int | None = None, category: str = "provider_error") -> None:
+    def __init__(self, message: str, *, retryable: bool = False, status_code: int | None = None, category: str = "provider_error",
+                 raw_output: str | None = None, usage: Any | None = None, latency_ms: int | None = None) -> None:
         super().__init__(message)
         self.retryable = retryable and category != "safety_block"
         self.status_code = status_code
         self.category = category
+        self.raw_output = raw_output
+        self.usage = usage
+        self.latency_ms = latency_ms
 
 
 @dataclass(slots=True, frozen=True)
@@ -139,6 +143,18 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return output
 
 
+def _reject_nonfinite(value: str):
+    raise StructuredOutputError(f"non-finite number is not valid JSON: {value}")
+
+
+def captured_json(raw_output: str) -> Any:
+    """Best-effort JSON artifact, never an authorization to execute an action."""
+    try:
+        return json.loads(raw_output, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_nonfinite)
+    except (ValueError, TypeError):
+        return None
+
+
 def parse_agent_action(raw_output: str) -> AgentAction:
     try:
         return _parse_agent_action(raw_output)
@@ -161,7 +177,7 @@ def _parse_agent_action(raw_output: str) -> AgentAction:
     if not (text.startswith("{") and text.endswith("}")):
         raise StructuredOutputError("model response must be one bare JSON object")
     try:
-        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+        value = json.loads(text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_nonfinite)
     except StructuredOutputError:
         raise
     except json.JSONDecodeError as exc:
@@ -316,16 +332,19 @@ class OpenAICompatibleGateway:
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
             raise GatewayError("model response is missing choices[0]")
         message = choices[0].get("message")
-        if choices[0].get("finish_reason") == "content_filter" or (isinstance(message, dict) and message.get("refusal")):
-            raise GatewayError("provider blocked the response", category="safety_block")
         raw = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(raw, str):
-            raise GatewayError("model response is missing choices[0].message.content")
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
         prompt_tokens = int(usage.get("prompt_tokens") or 0)
         completion_tokens = int(usage.get("completion_tokens") or 0)
         total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
         token_usage = TokenUsage(prompt_tokens, completion_tokens, total_tokens)
+        if choices[0].get("finish_reason") == "content_filter" or (isinstance(message, dict) and message.get("refusal")):
+            refusal = message.get("refusal") if isinstance(message, dict) else None
+            raise GatewayError("provider blocked the response", category="safety_block",
+                raw_output=raw if isinstance(raw, str) else refusal if isinstance(refusal, str) else None,
+                usage=token_usage, latency_ms=latency_ms)
+        if not isinstance(raw, str):
+            raise GatewayError("model response is missing choices[0].message.content", usage=token_usage, latency_ms=latency_ms)
         try:
             action = parse_agent_action(raw)
         except StructuredOutputError as exc:

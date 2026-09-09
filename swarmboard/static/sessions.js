@@ -3,6 +3,7 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   let state = null, selected = new URLSearchParams(location.search).get("run"), requestKey = null, busy = false;
+  let currentReport = null, currentFindings = {flags: []}, flaggedOnly = false;
 
   async function api(url, body) {
     const response = await fetch(url, body === undefined ? {} : {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
@@ -39,6 +40,7 @@
   }
 
   function renderSession(data, run) {
+    currentReport = data;
     $("report").hidden = false;
     $("report-title").textContent = data.title;
     $("report-state").textContent = `${data.archived ? "Archived · " : ""}${data.state}${data.stop_reason ? " · " + data.stop_reason : ""}`;
@@ -51,6 +53,10 @@
       run, thread, threads: state.threads, agents: state.agents, onChange: refresh,
     });
     else $("session-participant-tools").innerHTML = "";
+    window.SwarmFindings?.renderPanel($("session-findings"), {
+      run: run || {id: data.run_id}, thread, turns: data.actions,
+      onLoaded: findings => { if (selected === data.run_id) { currentFindings = findings; renderActions(); } },
+    });
     const rotation = data.cadence;
     $("cadence-note").textContent = rotation
       ? `Order: ${rotation.peer_order.flatMap(handle => ["@" + handle, "@" + rotation.ada_handle]).join(" → ")}. ${rotation.quiet ? "Waiting for a new contribution." : "Participants choose their topics and threads."}`
@@ -75,9 +81,17 @@
     $("metrics").innerHTML = [[m.turns_used,"Turns"],[m.tokens_used,"Tokens"],[m.threads,"Threads"],[m.new_thread,"Agent-started threads"],[m.pass,"Passes"],[m.failed_turns,"Failed turns"]]
       .map(([value,label]) => `<div class="metric"><strong>${esc(value)}</strong><span>${label}</span></div>`).join("");
     $("roster").innerHTML = data.participants.map(p => `<p><strong>@${esc(p.handle)}</strong><br>${esc(p.provider)} / ${esc(p.model)}${p.available ? "" : " · not active"}</p>`).join("");
-    $("actions").innerHTML = data.actions.map(action => `<tr><td><button data-trace="${esc(action.turn_id)}">${esc(action.turn_id.slice(0,8))}</button>${data.session_type === "research" ? `<details class="research-turn-actions"><summary>More</summary><button type="button" data-resample="${esc(action.turn_id)}">Resample</button></details>` : ""}</td><td>@${esc(action.handle)}</td><td>${esc(action.kind)}</td><td>${esc(action.state)}</td><td>${esc(action.error || (action.resulting_post_id ? "Posted to board" : "No post"))}</td></tr>`).join("") || '<tr><td colspan="5">No turns yet.</td></tr>';
+    renderActions();
   }
 
+  function renderActions() {
+    if (!currentReport) return;
+    const isFlagged = action => window.SwarmFindings?.isFlagged(currentFindings.flags, "turn", action.turn_id)
+      || window.SwarmFindings?.isFlagged(currentFindings.flags, "post", action.resulting_post_id);
+    const actions = currentReport.actions.filter(action => !flaggedOnly || isFlagged(action));
+    $("actions").innerHTML = actions.map(action => `<tr><td><button data-trace="${esc(action.turn_id)}">${esc(action.turn_id.slice(0,8))}</button>${isFlagged(action) ? '<span class="flagged-badge">Flagged</span>' : ""}<details class="research-turn-actions"><summary>More</summary><button type="button" data-flag-turn="${esc(action.turn_id)}">Flag turn</button>${currentReport.session_type === "research" ? `<button type="button" data-resample="${esc(action.turn_id)}">Resample</button>` : ""}</details></td><td>@${esc(action.handle)}</td><td>${esc(action.kind)}</td><td>${esc(action.state)}</td><td>${esc(action.error || (action.resulting_post_id ? "Posted to board" : "No post"))}</td></tr>`).join("") || `<tr><td colspan="5">${flaggedOnly ? "No flagged turns." : "No turns yet."}</td></tr>`;
+  }
+  $("sessions-flagged-only").addEventListener("change", event => { flaggedOnly = event.target.checked; renderActions(); });
   $("session-form").addEventListener("input", () => { requestKey = null; });
   $("session-form").addEventListener("submit", event => {
     event.preventDefault();
@@ -122,6 +136,9 @@
     });
   });
   $("actions").addEventListener("click", event => {
+    const flag = event.target.closest("[data-flag-turn]");
+    if (flag) window.SwarmFindings?.openFlag({runId: selected, targetType: "turn", targetId: flag.dataset.flagTurn,
+      suggestedTags: currentFindings.suggested_tags, onSaved: refresh});
     const resample = event.target.closest("[data-resample]");
     if (resample) window.SwarmResearch?.openResample({turnId: resample.dataset.resample,
       onCreated: async result => { if (result.forks?.[0]) { choose(result.forks[0].run_id); await refresh(); } }});

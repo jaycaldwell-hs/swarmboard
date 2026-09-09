@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="/static/sessions.css">
   <link rel="stylesheet" href="/static/research.css">
   <script src="/static/research.js" defer></script>
+  <script src="/static/findings.js" defer></script>
   <script src="/static/sessions.js" defer></script>
 </head>
 <body>
@@ -75,6 +76,7 @@
     <p id="cadence-note" class="muted"></p>
     <div id="session-research-navigation"></div>
     <div id="session-participant-tools"></div>
+    <div id="session-findings"></div>
     <div id="metrics" class="metrics"></div>
     <div class="grid">
       <div>
@@ -88,6 +90,7 @@
       </div>
     </div>
     <h3 style="margin-top:24px;">Activity log</h3>
+    <label class="findings-filter"><input type="checkbox" id="sessions-flagged-only">Flagged items only</label>
     <div class="table-scroll">
       <table>
         <thead>
