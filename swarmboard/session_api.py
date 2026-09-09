@@ -2,16 +2,17 @@
 from typing import Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 from sqlalchemy import func, select
 
 from . import autonomy, sessions
 from .auth import human_handle, request_key
 from .models import Event, Experiment, Thread, Turn
 from .repository import InvalidStateError, Repository
+from .schemas import SessionPolicyInput
 
 
-class SessionRequest(BaseModel):
+class SessionRequest(SessionPolicyInput):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     agent_ids: list[str] = Field(default_factory=list, max_length=50)
@@ -38,7 +39,10 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
     @api.post("/api/sessions", status_code=201)
     async def create_session(request: SessionRequest, http_request: Request):
         key = request_key(http_request, "session:" + request.idempotency_key)
-        fingerprint = sessions.digest(request.model_dump())
+        # Preserve the request identity of collaboration setups created before
+        # session types existed; research includes its complete policy.
+        fingerprint = sessions.digest(request.model_dump(
+            exclude={"session_type", "policy"} if request.session_type == "collaboration" else None))
         with factory.begin() as session:
             before = session.scalar(select(func.max(Event.id))) or 0
             repo = Repository(session)
@@ -59,9 +63,11 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
                     limits={"max_rounds": request.max_rounds, "max_tokens": request.max_tokens,
                             "max_duration_seconds": request.max_duration_seconds},
                     continuous=request.continuous, cadence_mode=request.cadence,
-                    author_handle=human_handle(http_request))
+                    author_handle=human_handle(http_request), session_type=request.session_type,
+                    policy=request.policy)
                 thread = session.scalar(select(Thread).where(Thread.run_id == run.id))
-                output = {"run_id": run.id, "thread_id": thread.id, "request_sha256": fingerprint}
+                output = {"run_id": run.id, "thread_id": thread.id, "request_sha256": fingerprint,
+                          "session_type": run.config["session_type"], "policy": run.config["policy"]}
                 repo.add_event("session.created", run_id=run.id, thread_id=thread.id,
                                actor_type="human", actor_id=key, payload=output)
             start = run.continuous and run.state == "created"

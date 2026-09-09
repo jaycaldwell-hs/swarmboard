@@ -15,9 +15,7 @@ DEFAULT_PERSONA_DIR = Path(__file__).resolve().parent.parent / "persona 1"
 @dataclass(frozen=True, slots=True)
 class Settings:
     database_url: str
-    ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_model: str = "qwen3-coder:30b"
-    openai_compat_base_url: str = "https://api.openai.com"
+    openai_compat_base_url: str = "https://openrouter.ai/api/v1"
     idle_seconds: float = 45.0
     dormant_seconds: float = 300.0
     model_timeout_seconds: float = 60.0
@@ -32,10 +30,8 @@ class Settings:
         resolved_url = database_url or f"sqlite:///{db_path.resolve()}"
         return cls(
             database_url=resolved_url,
-            ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3-coder:30b"),
             openai_compat_base_url=os.getenv(
-                "OPENAI_COMPAT_BASE_URL", "https://api.openai.com"
+                "OPENAI_COMPAT_BASE_URL", "https://openrouter.ai/api/v1"
             ).rstrip("/"),
             idle_seconds=float(os.getenv("SWARMBOARD_IDLE_SECONDS", "45")),
             dormant_seconds=float(os.getenv("SWARMBOARD_DORMANT_SECONDS", "300")),

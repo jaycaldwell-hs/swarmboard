@@ -112,7 +112,7 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
             await wait_until(completed, timeout=5)
             assert len(gateway.calls) == 3
             detail = (await client.get(f"/api/threads/{thread['thread_id']}")).json()
-            assert [post["author_handle"] for post in detail["posts"]] == ["SYSTEM", "ada", "wintermute"]
+            assert [post["author_handle"] for post in detail["posts"]] == ["human", "ada", "wintermute"]
             with app.state.session_factory() as session:
                 turns = list(session.scalars(select(Turn).where(Turn.agent_id == agent["id"])))
                 assert len(turns) == 2

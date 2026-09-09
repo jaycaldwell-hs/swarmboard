@@ -13,11 +13,9 @@ from swarmboard.gateways import (
     GatewayError,
     GatewayResult,
     ModelGateway,
-    OllamaGateway,
     OpenAICompatibleGateway,
     StructuredOutputError,
     TokenUsage,
-    VertexGeminiGateway,
 )
 
 
@@ -34,7 +32,7 @@ def reply_json(body: str = "A bounded reply.") -> str:
 
 
 @pytest.mark.asyncio
-async def test_ollama_sends_action_schema_and_parses_usage() -> None:
+async def test_openrouter_sends_action_schema_and_parses_usage() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -42,16 +40,15 @@ async def test_ollama_sends_action_schema_and_parses_usage() -> None:
         return httpx.Response(
             200,
             json={
-                "model": "qwen-test:latest",
-                "message": {"role": "assistant", "content": reply_json()},
-                "done_reason": "stop",
-                "prompt_eval_count": 17,
-                "eval_count": 8,
+                "model": "qwen/qwen-test",
+                "choices": [{"message": {"role": "assistant", "content": reply_json()},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 17, "completion_tokens": 8},
             },
         )
 
-    gateway = OllamaGateway(
-        "http://ollama.test/",
+    gateway = OpenAICompatibleGateway(
+        "https://openrouter.ai/api/v1/",
         transport=httpx.MockTransport(handler),
     )
     result = await gateway.complete(
@@ -63,14 +60,14 @@ async def test_ollama_sends_action_schema_and_parses_usage() -> None:
 
     assert len(requests) == 1
     request = requests[0]
-    assert request.url == httpx.URL("http://ollama.test/api/chat")
+    assert request.url == httpx.URL("https://openrouter.ai/api/v1/chat/completions")
     payload = json.loads(request.content)
     assert payload["model"] == "qwen-test"
     assert payload["messages"] == [{"role": "system", "content": "Return one action."}]
-    assert payload["stream"] is False
-    assert payload["options"] == {"temperature": 0.25, "seed": 41}
-    assert payload["format"]["additionalProperties"] is False
-    assert set(payload["format"]["required"]) == set(payload["format"]["properties"])
+    assert payload["temperature"] == 0.25 and payload["seed"] == 41
+    schema = payload["response_format"]["json_schema"]["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
 
     assert result.action == AgentAction(
         action="reply",
@@ -78,14 +75,14 @@ async def test_ollama_sends_action_schema_and_parses_usage() -> None:
         body="A bounded reply.",
         intent="support",
     )
-    assert result.model == "qwen-test:latest"
-    assert result.provider == "ollama"
+    assert result.model == "qwen/qwen-test"
+    assert result.provider == "openai_compatible"
     assert result.usage == TokenUsage(prompt_tokens=17, completion_tokens=8, total_tokens=25)
-    assert result.response_metadata["done_reason"] == "stop"
+    assert result.response_metadata["finish_reason"] == "stop"
 
 
 @pytest.mark.asyncio
-async def test_ollama_rejects_invalid_json_without_fabricating_a_fallback() -> None:
+async def test_openrouter_rejects_invalid_json_without_fabricating_a_fallback() -> None:
     calls = 0
     raw = "I agree, but this is not the required JSON object."
 
@@ -96,13 +93,12 @@ async def test_ollama_rejects_invalid_json_without_fabricating_a_fallback() -> N
             200,
             json={
                 "model": "bad-output-model",
-                "message": {"role": "assistant", "content": raw},
-                "prompt_eval_count": 5,
-                "eval_count": 11,
+                "choices": [{"message": {"role": "assistant", "content": raw}}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 11},
             },
         )
 
-    gateway = OllamaGateway(transport=httpx.MockTransport(handler))
+    gateway = OpenAICompatibleGateway("https://openrouter.ai/api/v1", transport=httpx.MockTransport(handler))
 
     with pytest.raises(StructuredOutputError, match="one bare JSON object") as raised:
         await gateway.complete(
@@ -124,7 +120,8 @@ async def test_retryable_http_error_is_sanitized() -> None:
         assert request.headers["authorization"] == f"Bearer {secret}"
         return httpx.Response(503, json={"error": {"message": "provider temporarily overloaded"}})
 
-    gateway = OllamaGateway(
+    gateway = OpenAICompatibleGateway(
+        "https://openrouter.ai/api/v1",
         headers={"Authorization": f"Bearer {secret}"},
         transport=httpx.MockTransport(handler),
     )
@@ -167,9 +164,9 @@ async def test_openai_compatible_gateway_uses_endpoint_bearer_and_strict_schema(
         )
 
     gateway = OpenAICompatibleGateway(
-        "https://router.test/api/v1/",
+        "https://openrouter.ai/api/v1/",
         api_key="router-secret",
-        headers={"X-Client": "swarmboard-test"},
+        headers={"X-Title": "swarmboard-test"},
         transport=httpx.MockTransport(handler),
     )
     result = await gateway.complete(
@@ -181,9 +178,9 @@ async def test_openai_compatible_gateway_uses_endpoint_bearer_and_strict_schema(
 
     assert len(requests) == 1
     request = requests[0]
-    assert request.url == httpx.URL("https://router.test/api/v1/chat/completions")
+    assert request.url == httpx.URL("https://openrouter.ai/api/v1/chat/completions")
     assert request.headers["authorization"] == "Bearer router-secret"
-    assert request.headers["x-client"] == "swarmboard-test"
+    assert request.headers["x-title"] == "swarmboard-test"
     payload = json.loads(request.content)
     assert payload["model"] == "vendor/model"
     assert payload["temperature"] == 0.1
@@ -207,76 +204,36 @@ async def test_openai_compatible_gateway_uses_endpoint_bearer_and_strict_schema(
 
 
 @pytest.mark.asyncio
-async def test_vertex_gemini_uses_structured_json_and_candidate_parts() -> None:
-    calls: list[dict[str, Any]] = []
+async def test_openrouter_preserves_raw_text_and_reasoning_request_settings() -> None:
+    raw = " \r\n" + reply_json("Checked without sounding formal.") + "\t\n"
+    calls = []
 
-    class FakeModels:
-        async def generate_content(self, **kwargs: Any) -> Any:
-            calls.append(kwargs)
-            return SimpleNamespace(
-                candidates=[
-                    SimpleNamespace(
-                        content=SimpleNamespace(
-                            parts=[
-                                SimpleNamespace(text=reply_json("Checked without sounding formal."))
-                            ]
-                        ),
-                        finish_reason=SimpleNamespace(value="STOP"),
-                    )
-                ],
-                usage_metadata=SimpleNamespace(
-                    prompt_token_count=31,
-                    candidates_token_count=7,
-                    total_token_count=38,
-                ),
-                model_version="gemini-test-001",
-            )
+    async def handler(request):
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={
+            "model": "qwen/qwen-test", "provider": "upstream-test",
+            "choices": [{"message": {"content": raw}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 31, "completion_tokens": 7, "total_tokens": 38},
+        })
 
-    gateway = VertexGeminiGateway(
-        "handshake-production",
-        location="global",
-        async_client=SimpleNamespace(models=FakeModels()),
-    )
-    result = await gateway.complete(
-        model="gemini-3-pro-preview",
-        messages=[
-            {"role": "system", "content": "Be a conversational evidence checker."},
-            {"role": "user", "content": "What does this thread actually support?"},
-        ],
-        sampling={
-            "temperature": 0.15,
-            "max_tokens": 256,
-            "reasoning": {"effort": "low", "exclude": True},
-        },
+    result = await OpenAICompatibleGateway(
+        "https://openrouter.ai/api/v1", transport=httpx.MockTransport(handler),
+    ).complete(
+        model="qwen/qwen-test",
+        messages=[{"role": "system", "content": "Be a conversational evidence checker."},
+                  {"role": "user", "content": "What does this thread support?"}],
+        sampling={"temperature": 0.15, "max_tokens": 256,
+                  "reasoning": {"effort": "low", "exclude": True}},
         seed=29,
     )
-
     assert len(calls) == 1
-    call = calls[0]
-    assert call["model"] == "gemini-3-pro-preview"
-    assert call["contents"] == [
-        {
-            "role": "user",
-            "parts": [{"text": "What does this thread actually support?"}],
-        }
-    ]
-    config = call["config"]
-    assert config.system_instruction == "Be a conversational evidence checker."
-    assert config.response_mime_type == "application/json"
-    assert config.response_json_schema["additionalProperties"] is False
-    assert config.max_output_tokens == 256
-    assert config.thinking_config.include_thoughts is False
-    assert config.thinking_config.thinking_level.value == "LOW"
-    assert config.seed == 29
+    assert calls[0]["reasoning"] == {"effort": "low", "exclude": True}
+    assert calls[0]["max_tokens"] == 256 and calls[0]["seed"] == 29
+    assert calls[0]["messages"][0]["role"] == "system"
+    assert result.raw_output == raw
     assert result.action.body == "Checked without sounding formal."
-    assert result.provider == "vertex_gemini"
-    assert result.model == "gemini-test-001"
     assert result.usage == TokenUsage(prompt_tokens=31, completion_tokens=7, total_tokens=38)
-    assert result.response_metadata == {
-        "finish_reason": "STOP",
-        "project": "handshake-production",
-        "location": "global",
-    }
+    assert result.response_metadata["upstream_provider"] == "upstream-test"
 
 
 class RecordingCompatibleGateway:
@@ -304,53 +261,47 @@ async def test_model_gateway_resolves_named_environment_key_at_each_call(
 ) -> None:
     RecordingCompatibleGateway.instances.clear()
     monkeypatch.setattr(gateway_module, "OpenAICompatibleGateway", RecordingCompatibleGateway)
-    monkeypatch.setenv("SWARMBOARD_TEST_PROVIDER_KEY", "first-live-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "first-live-key")
     agent = SimpleNamespace(
         provider="openai_compatible",
         model="vendor/model",
         settings={
-            "base_url": "https://provider.test/v1",
-            "api_key_env": "SWARMBOARD_TEST_PROVIDER_KEY",
-            "api_key": "persisted-key-must-be-ignored",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
         },
     )
     dispatcher = ModelGateway()
 
     await dispatcher.complete(agent, [{"role": "user", "content": "First call"}])
-    monkeypatch.setenv("SWARMBOARD_TEST_PROVIDER_KEY", "rotated-live-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "rotated-live-key")
     await dispatcher.complete(agent, [{"role": "user", "content": "Second call"}])
 
     assert [instance.kwargs["api_key"] for instance in RecordingCompatibleGateway.instances] == [
         "first-live-key",
         "rotated-live-key",
     ]
-    assert all(
-        instance.kwargs["api_key"] != "persisted-key-must-be-ignored"
-        for instance in RecordingCompatibleGateway.instances
-    )
 
 
 @pytest.mark.asyncio
-async def test_model_gateway_rejects_missing_named_key_but_allows_keyless_local_provider(
+async def test_model_gateway_rejects_missing_key_and_keyless_local_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     RecordingCompatibleGateway.instances.clear()
     monkeypatch.setattr(gateway_module, "OpenAICompatibleGateway", RecordingCompatibleGateway)
-    monkeypatch.delenv("SWARMBOARD_MISSING_PROVIDER_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     dispatcher = ModelGateway()
     missing_key_agent = SimpleNamespace(
         provider="openai_compatible",
         model="vendor/model",
         settings={
-            "base_url": "https://provider.test/v1",
-            "api_key_env": "SWARMBOARD_MISSING_PROVIDER_KEY",
-            "api_key": "legacy-persisted-key",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key_env": "OPENROUTER_API_KEY",
         },
     )
 
     with pytest.raises(
         GatewayError,
-        match="credential environment variable is not set: SWARMBOARD_MISSING_PROVIDER_KEY",
+        match="credential environment variable is not set: OPENROUTER_API_KEY",
     ):
         await dispatcher.complete(missing_key_agent, [{"role": "user", "content": "Call"}])
     assert RecordingCompatibleGateway.instances == []
@@ -358,58 +309,20 @@ async def test_model_gateway_rejects_missing_named_key_but_allows_keyless_local_
     local_agent = SimpleNamespace(
         provider="openai_compatible",
         model="local/model",
-        settings={"base_url": "http://127.0.0.1:9000", "api_key": "legacy-persisted-key"},
+        settings={"base_url": "http://127.0.0.1:9000"},
     )
-    await dispatcher.complete(local_agent, [{"role": "user", "content": "Local call"}])
-
-    assert len(RecordingCompatibleGateway.instances) == 1
-    assert RecordingCompatibleGateway.instances[0].kwargs["api_key"] is None
-
-
-class RecordingVertexGateway:
-    instances: list["RecordingVertexGateway"] = []
-
-    def __init__(self, project: str, **kwargs: Any) -> None:
-        self.project = project
-        self.kwargs = kwargs
-        self.__class__.instances.append(self)
-
-    async def complete(self, *, model: str, messages: Any, sampling: Any, seed: int | None) -> GatewayResult:
-        action = AgentAction(action="pass")
-        return GatewayResult(
-            action=action,
-            raw_output=action.model_dump_json(),
-            provider="vertex_gemini",
-            model=model,
-            latency_ms=0,
-        )
+    with pytest.raises(GatewayError, match="approved HTTPS provider"):
+        await dispatcher.complete(local_agent, [{"role": "user", "content": "Local call"}])
+    assert RecordingCompatibleGateway.instances == []
 
 
+@pytest.mark.parametrize("provider", ["ollama", "vertex", "vertex_gemini", "gemini_vertex", "openai", "compatible"])
 @pytest.mark.asyncio
-async def test_model_gateway_dispatches_vertex_project_and_location(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    RecordingVertexGateway.instances.clear()
-    monkeypatch.setattr(gateway_module, "VertexGeminiGateway", RecordingVertexGateway)
-    agent = SimpleNamespace(
-        provider="vertex_gemini",
-        model="gemini-3-pro-preview",
-        settings={
-            "project": "handshake-production",
-            "location": "global",
-            "sampling": {"temperature": 0.15},
-        },
-    )
-
-    result = await ModelGateway().complete(
-        agent,
-        [{"role": "user", "content": "Check this claim."}],
-        seed=11,
-    )
-
-    assert result.provider == "vertex_gemini"
-    assert len(RecordingVertexGateway.instances) == 1
-    instance = RecordingVertexGateway.instances[0]
-    assert instance.project == "handshake-production"
-    assert instance.kwargs["location"] == "global"
-    assert instance.kwargs["timeout_seconds"] == 90.0
+async def test_model_gateway_rejects_retired_providers_before_dispatch(monkeypatch, provider) -> None:
+    RecordingCompatibleGateway.instances.clear()
+    monkeypatch.setattr(gateway_module, "OpenAICompatibleGateway", RecordingCompatibleGateway)
+    agent = SimpleNamespace(provider=provider, model="retired-model", settings={})
+    with pytest.raises(GatewayError, match="Codex/Astra or OpenRouter") as error:
+        await ModelGateway().complete(agent, [{"role": "user", "content": "Do not call."}])
+    assert error.value.category == "configuration"
+    assert RecordingCompatibleGateway.instances == []

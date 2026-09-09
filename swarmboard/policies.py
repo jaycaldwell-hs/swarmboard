@@ -6,6 +6,7 @@ import hashlib
 import re
 import unicodedata
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -29,6 +30,8 @@ class PolicyConfig:
     allow_self_replies: bool = False
     allow_repeated_posts: bool = False
     require_known_parent: bool = True
+    consecutive_turn_cap: int | None = None
+    enforce_cooldown: bool = False
 
 
 @dataclass(slots=True)
@@ -99,6 +102,20 @@ def violates_ping_pong(posts: Sequence[Any], candidate_agent_id: str, limit: int
     return all(tail[index] != tail[index - 1] for index in range(1, len(tail)))
 
 
+def violates_consecutive_cap(posts: Sequence[Any], candidate_agent_id: str, limit: int | None) -> bool:
+    """Humans or another participant end a consecutive posting streak."""
+    if limit is None:
+        return False
+    count = 0
+    for post in reversed(posts):
+        if _identity(post) != str(candidate_agent_id):
+            break
+        count += 1
+        if count >= limit:
+            return True
+    return False
+
+
 def _permissions(agent: Any) -> Mapping[str, Any]:
     permissions = getattr(agent, "permissions", None)
     return permissions if isinstance(permissions, Mapping) else {}
@@ -123,6 +140,7 @@ class ActionPolicy:
         thread: Any | None,
         posts: Sequence[Any],
         existing_fingerprints: Iterable[str] = (),
+        now: datetime | None = None,
     ) -> PolicyDecision:
         agent_id = str(getattr(agent, "id", ""))
         thread_id = str(getattr(thread, "id", "")) if thread is not None else None
@@ -141,6 +159,18 @@ class ActionPolicy:
         thread_status = str(getattr(thread, "status", ""))
         if thread_status == "closed":
             return PolicyDecision(False, None, "thread is closed", fingerprint)
+
+        if self.config.enforce_cooldown:
+            cooldown = max(0.0, float(getattr(agent, "cooldown_seconds", 0) or 0))
+            last_spoke = getattr(agent, "last_spoke_at", None)
+            if cooldown and isinstance(last_spoke, datetime):
+                if last_spoke.tzinfo is None:
+                    last_spoke = last_spoke.replace(tzinfo=timezone.utc)
+                current_time = now or datetime.now(timezone.utc)
+                if current_time.tzinfo is None:
+                    current_time = current_time.replace(tzinfo=timezone.utc)
+                if (current_time - last_spoke).total_seconds() < cooldown:
+                    return PolicyDecision(False, None, "agent cooldown has not elapsed", fingerprint)
 
         body = action.body or ""
         if len(body) > self.config.max_body_chars:
@@ -161,6 +191,9 @@ class ActionPolicy:
 
         if not self.config.allow_consecutive_posts and posts and _identity(posts[-1]) == agent_id:
             return PolicyDecision(False, None, "agent cannot reply immediately after itself", fingerprint)
+
+        if violates_consecutive_cap(posts, agent_id, self.config.consecutive_turn_cap):
+            return PolicyDecision(False, None, "consecutive turn cap reached", fingerprint)
 
         if violates_ping_pong(posts, agent_id, self.config.max_agent_ping_pong_posts):
             return PolicyDecision(False, None, "two-agent ping-pong limit reached", fingerprint)

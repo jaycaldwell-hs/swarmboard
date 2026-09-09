@@ -20,6 +20,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import sessions, autonomy, cadence
+from . import run_policy
 from .config import DEFAULT_AGENT_OUTPUT_TOKENS
 from .gateways import (
     AgentAction,
@@ -326,6 +327,12 @@ class SwarmEngine:
             return [_event_dict(event) for event in events]
 
     def _scheduler_for(self, run):
+        if run and run.config.get("session_type") == "research":
+            base = self.scheduler.config
+            if autonomy.enabled(run):
+                base = replace(base, role_injection_probability=0, role_injection_weight=0,
+                               recent_penalty=0, domination_penalty=0)
+            return WeightedFairScheduler(run_policy.effective_scheduler_config(run, base))
         if not autonomy.enabled(run):
             return self.scheduler
         return WeightedFairScheduler(replace(self.scheduler.config,
@@ -334,6 +341,8 @@ class SwarmEngine:
             recent_penalty=0, domination_penalty=0))
 
     def _policy_for(self, run):
+        if run and run.config.get("session_type") == "research":
+            return ActionPolicy(run_policy.effective_action_config(run, self.policy.config))
         if not autonomy.enabled(run):
             return self.policy
         return ActionPolicy(replace(self.policy.config,
@@ -580,6 +589,8 @@ class SwarmEngine:
             interrupted = list(session.scalars(interrupted_stmt))
             for turn in interrupted:
                 turn.state = TurnState.SELECTED.value
+                turn.outcome = None
+                turn.rejection_reason = None
                 turn.error = None
                 turn.completed_at = None
                 turn.claim_token = None
@@ -845,11 +856,12 @@ class SwarmEngine:
                 raise ClaimConflictError("stimulus claim was lost before scheduling")
             if stimulus.cascade_depth > run.max_cascade_depth:
                 repo.complete_stimulus(stimulus.id, claim_token=claim_token)
-                repo.set_thread_status(
-                    thread.id,
-                    ThreadStatus.DORMANT,
-                    reason="maximum reactive cascade depth reached",
-                )
+                if run_policy.policy_for(run)["dormancy"]:
+                    repo.set_thread_status(
+                        thread.id,
+                        ThreadStatus.DORMANT,
+                        reason="maximum reactive cascade depth reached",
+                    )
                 events = self._events_after(session, before)
                 turn_ids: list[str] = []
                 detail = "maximum reactive cascade depth reached"
@@ -881,7 +893,8 @@ class SwarmEngine:
                             select(Post)
                             .where(Post.thread_id == thread.id)
                             .order_by(Post.sequence.desc())
-                            .limit(max(100, self.config.context_post_limit))
+                            .limit(max(100, self.config.context_post_limit,
+                                (run_policy.policy_for(run)["consecutive_turn_cap"] or 0) + 1))
                         )
                     )
                     posts.reverse()
@@ -928,11 +941,12 @@ class SwarmEngine:
                             decision.reason = "run round budget exhausted"
                         else:
                             decision.reason = "per-thread quota exhausted"
-                            repo.set_thread_status(
-                                thread.id,
-                                ThreadStatus.DORMANT,
-                                reason=decision.reason,
-                            )
+                            if run_policy.policy_for(run)["dormancy"]:
+                                repo.set_thread_status(
+                                    thread.id,
+                                    ThreadStatus.DORMANT,
+                                    reason=decision.reason,
+                                )
                     elif len(decision.selected_agent_ids) > selection_limit:
                         decision.selected_agent_ids = decision.selected_agent_ids[:selection_limit]
                         decision.reason = (
@@ -1218,6 +1232,8 @@ class SwarmEngine:
         calls_made = 0
         deferred_for_pause = False
         failure_category = None
+        outcome = "provider_failure"
+        capture_mode = run_policy.policy_for(run)["schema_mode"] == "capture"
 
         while attempt < max_attempts:
             if not self._run_can_call(turn.run_id):
@@ -1259,7 +1275,9 @@ class SwarmEngine:
                     current_agent = Repository(policy_session).get_agent(current_turn.agent_id)
                     current_run = Repository(policy_session).get_run(current_turn.run_id) if current_turn.run_id else None
                     current_thread = autonomy.action_thread(Repository(policy_session), current_run, current_turn, result.action)
-                    current_posts = Repository(policy_session).list_posts(current_thread.id, limit=500)
+                    current_posts = (list(policy_session.scalars(select(Post).where(Post.thread_id == current_thread.id)
+                                     .order_by(Post.sequence))) if run_policy.is_research(current_run)
+                                     else Repository(policy_session).list_posts(current_thread.id, limit=500))
                     fingerprints = {
                         str(post.metadata_json.get("action_fingerprint"))
                         for post in current_posts
@@ -1272,11 +1290,13 @@ class SwarmEngine:
                         thread=current_thread,
                         posts=current_posts,
                         existing_fingerprints=fingerprints,
+                        now=self._virtual_now(current_run) if current_run else utc_now(),
                     )
                 if decision.accepted:
                     final_decision = decision
                     break
                 final_error = f"policy rejected action: {decision.reason}"
+                outcome = "rejected_by_policy"
                 retry_history.append(
                     {
                         "attempt": attempt + 1,
@@ -1306,11 +1326,23 @@ class SwarmEngine:
             except (GatewayError, StructuredOutputError) as exc:
                 elapsed_ms = round((time.perf_counter() - call_started) * 1000)
                 retryable = not isinstance(exc, GatewayError) or exc.retryable
+                if isinstance(exc, StructuredOutputError):
+                    outcome = "invalid_output"
+                    if capture_mode:
+                        retryable = False
+                else:
+                    outcome = "provider_failure"
                 final_error = self._safe_error(exc)
                 failure_category = getattr(exc, "category", "structured_output")
                 rejected_raw = getattr(exc, "raw_output", None)
                 if isinstance(rejected_raw, str):
                     last_raw = rejected_raw
+                    # JSON artifacts may have unknown fields or invalid actions.
+                    # Retain those fields without treating them as executable.
+                    try:
+                        parsed_action = json.loads(rejected_raw)
+                    except (ValueError, TypeError):
+                        parsed_action = None
                 rejected_usage = getattr(exc, "usage", None)
                 if isinstance(rejected_usage, TokenUsage):
                     aggregate_input += rejected_usage.prompt_tokens
@@ -1351,6 +1383,7 @@ class SwarmEngine:
                 raise
             except Exception as exc:
                 final_error = self._safe_error(exc)
+                outcome = "provider_failure"
                 retry_history.append(
                     {
                         "attempt": attempt + 1,
@@ -1429,6 +1462,8 @@ class SwarmEngine:
                     raw_output=last_raw,
                     parsed_action=parsed_action,
                     error=final_error or "model attempts exhausted",
+                    outcome=outcome,
+                    rejection_reason=final_error,
                     latency_ms=aggregate_latency or None,
                     input_tokens=aggregate_input,
                     output_tokens=aggregate_output,
@@ -1447,7 +1482,7 @@ class SwarmEngine:
                             reason=f"{failure_category or 'policy_rejection'}: {final_error}")
                     elif autonomy.enabled(failed_run):
                         # One unavailable endpoint does not stop the other participants.
-                        if failure_category:
+                        if failure_category and not (capture_mode and outcome == "invalid_output"):
                             unavailable = set(failed_run.config.get("unavailable_agent_ids", []))
                             unavailable.add(failed.agent_id)
                             failed_run.config = {**failed_run.config, "unavailable_agent_ids": sorted(unavailable)}
@@ -1533,7 +1568,8 @@ class SwarmEngine:
             agent = repo.get_agent(turn.agent_id)
             run = repo.get_run(turn.run_id) if turn.run_id else None
             thread = autonomy.action_thread(repo, run, turn, action)
-            posts = repo.list_posts(thread.id, limit=500)
+            posts = (list(session.scalars(select(Post).where(Post.thread_id == thread.id).order_by(Post.sequence)))
+                     if run_policy.is_research(run) else repo.list_posts(thread.id, limit=500))
             fingerprints = {
                 str(post.metadata_json.get("action_fingerprint"))
                 for post in posts
@@ -1546,6 +1582,7 @@ class SwarmEngine:
                 thread=thread,
                 posts=posts,
                 existing_fingerprints=fingerprints,
+                now=self._virtual_now(run) if run else utc_now(),
             )
             terminal_states = {
                 RunState.STOPPED.value,
@@ -1751,6 +1788,8 @@ class SwarmEngine:
             will_retry = stimulus.attempts < stimulus.max_attempts
             if will_retry:
                 turn.state = TurnState.SELECTED.value
+                turn.outcome = None
+                turn.rejection_reason = None
                 turn.claim_token = None
                 turn.error = None
                 turn.completed_at = None
@@ -1764,6 +1803,8 @@ class SwarmEngine:
                 )
             else:
                 turn.state = TurnState.FAILED.value
+                turn.outcome = "provider_failure"
+                turn.rejection_reason = error
                 turn.claim_token = None
                 turn.error = error
                 turn.completed_at = utc_now()
@@ -1805,6 +1846,8 @@ class SwarmEngine:
             ):
                 return False
             turn.state = TurnState.SELECTED.value
+            turn.outcome = None
+            turn.rejection_reason = None
             turn.claim_token = None
             turn.error = None
             turn.completed_at = None
@@ -1847,6 +1890,8 @@ class SwarmEngine:
             ):
                 return
             turn.state = TurnState.FAILED.value
+            turn.outcome = "rejected_by_policy"
+            turn.rejection_reason = error
             turn.claim_token = None
             turn.error = error
             turn.completed_at = utc_now()
@@ -1928,7 +1973,7 @@ class SwarmEngine:
                         stimulus_id=fallback.id,
                         payload={"previous_stimulus_id": stimulus.id, "attempted_agent_ids": sorted(attempted)},
                     )
-            if not fixed_cadence and not made_posts and (
+            if run_policy.policy_for(active_run)["dormancy"] and not fixed_cadence and not made_posts and (
                 noncontributing or stimulus.payload.get("fallback_root_id")
                 or stimulus.kind == StimulusKind.IDLE_REVISIT.value
             ):
@@ -2079,7 +2124,7 @@ class SwarmEngine:
             before = self._last_event_id(session)
             repo = Repository(session)
             run = repo.get_run(run_id)
-            if run.state != RunState.RUNNING.value or cadence.enabled(run):
+            if run.state != RunState.RUNNING.value or cadence.enabled(run) or not run_policy.policy_for(run)["dormancy"]:
                 return
             now = self._virtual_now(run)
             threads = repo.list_threads(run_id=run.id, status=ThreadStatus.ACTIVE, limit=500)
@@ -2245,12 +2290,8 @@ class SwarmEngine:
         if agent.provider == "codex":
             return sampling
         remaining = max(1, run.max_tokens - run.tokens_used)
-        if agent.provider.casefold() == "ollama":
-            configured = int(sampling.get("num_predict", DEFAULT_AGENT_OUTPUT_TOKENS))
-            sampling["num_predict"] = min(configured, remaining)
-        else:
-            configured = int(sampling.get("max_tokens", DEFAULT_AGENT_OUTPUT_TOKENS))
-            sampling["max_tokens"] = min(configured, remaining)
+        configured = int(sampling.get("max_tokens", DEFAULT_AGENT_OUTPUT_TOKENS))
+        sampling["max_tokens"] = min(configured, remaining)
         return sampling
 
     def _virtual_now(self, run: Run) -> datetime:

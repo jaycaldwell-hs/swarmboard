@@ -24,6 +24,21 @@ class InputModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
+class SessionPolicyInput(InputModel):
+    """Creation-only session type and policy; validation precedes all writes."""
+
+    session_type: Literal["collaboration", "research"] = "collaboration"
+    policy: str | dict[str, Any] = "production"
+
+    @model_validator(mode="after")
+    def validate_session_policy(self):
+        from .run_policy import normalize_config
+
+        config = normalize_config({"session_type": self.session_type, "policy": self.policy})
+        self.policy = config["policy"]
+        return self
+
+
 class ORMModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -32,7 +47,7 @@ class AgentCreate(InputModel):
     handle: str = Field(min_length=1, max_length=80, pattern=r"^[A-Za-z][A-Za-z0-9_-]*$")
     persona: str = Field(min_length=1, max_length=20_000)
     role: str = Field(default="specialist", min_length=1, max_length=80)
-    provider: str = Field(default="ollama", min_length=1, max_length=80)
+    provider: Literal["openai_compatible", "codex"] = "openai_compatible"
     model: str = Field(min_length=1, max_length=255)
     settings: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, Any] = Field(default_factory=dict)
@@ -52,7 +67,7 @@ class AgentCreate(InputModel):
 class AgentUpdate(InputModel):
     persona: str | None = Field(default=None, min_length=1, max_length=20_000)
     role: str | None = Field(default=None, min_length=1, max_length=80)
-    provider: str | None = Field(default=None, min_length=1, max_length=80)
+    provider: Literal["openai_compatible", "codex"] | None = None
     model: str | None = Field(default=None, min_length=1, max_length=255)
     settings: dict[str, Any] | None = None
     permissions: dict[str, Any] | None = None
@@ -250,6 +265,10 @@ class TurnRead(ORMModel):
     triggering_event_id: int | None
     resulting_post_id: str | None
     state: TurnState
+    session_type: Literal["collaboration", "research"]
+    policy_snapshot: dict[str, Any]
+    outcome: str | None
+    rejection_reason: str | None
     idempotency_key: str
     claim_token: str | None
     context_post_ids: list[str]

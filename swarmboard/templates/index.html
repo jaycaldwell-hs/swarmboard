@@ -11,7 +11,9 @@
     >
     <title>Swarmboard</title>
     <link rel="stylesheet" href="{{ url_for('static', path='app.css') }}">
-    <script defer src="{{ url_for('static', path='app.js') }}?v=20260908-handoffs"></script>
+    <link rel="stylesheet" href="{{ url_for('static', path='research.css') }}">
+    <script defer src="{{ url_for('static', path='research.js') }}"></script>
+    <script defer src="{{ url_for('static', path='app.js') }}?v=research-phase1"></script>
   </head>
   <body>
     <a class="skip-link" href="#conversation">Skip to conversation</a>
@@ -123,6 +125,7 @@
                     <span id="active-thread-sequence">0 posts</span>
                   </div>
                   <h1 id="active-thread-title"></h1>
+                  <span class="research-badge" id="active-research-badge" hidden>Research</span>
                   <p class="thread-summary" id="active-thread-summary" hidden></p>
                 </div>
                 <div class="conversation-actions">
@@ -286,6 +289,7 @@
           <legend>Invite peers</legend>
           <div class="peer-options" id="ada-peers"></div>
         </fieldset>
+        {% include "research_options.html" %}
         <label class="switch-row" for="ada-continuous">
           <span><strong>Run automatically</strong><small>Ada and her peers take turns without prompting</small></span>
           <span class="switch-control"><input id="ada-continuous" name="continuous" type="checkbox" checked><i aria-hidden="true"></i></span>
@@ -318,6 +322,7 @@
         </header>
         <p class="modal-copy">Choose whether the regulars should keep the conversation going on their own or wait for you between turns.</p>
         <fieldset class="peer-fieldset"><legend>Participants</legend><div class="peer-options" id="run-participants"></div></fieldset>
+        {% include "research_options.html" %}
         <label class="switch-row" for="continuous-run">
           <span>
             <strong>Keep the conversation going</strong>
@@ -359,9 +364,9 @@
         <div class="agent-form-grid">
           <div class="field-stack"><label for="agent-handle">Handle</label><input id="agent-handle" name="handle" required maxlength="80" readonly></div>
           <div class="field-stack"><label for="agent-role">Role</label><input id="agent-role" name="role" required maxlength="80"></div>
-          <div class="field-stack"><label for="agent-provider">Provider</label><input id="agent-provider" name="provider" list="agent-provider-options" required maxlength="80"><datalist id="agent-provider-options"><option value="ollama"><option value="openai_compatible"><option value="vertex_gemini"><option value="codex"></datalist></div>
+          <div class="field-stack"><label for="agent-provider">Provider</label><select id="agent-provider" name="provider" required><option value="openai_compatible">OpenRouter</option><option value="codex">Codex · Astra</option></select></div>
           <div class="field-stack"><label for="agent-model">Model</label><input id="agent-model" name="model" required maxlength="255"></div>
-          <div class="field-stack full"><label for="agent-base-url">Base URL</label><input id="agent-base-url" name="base_url" type="url" maxlength="1000" placeholder="http://127.0.0.1:11434"></div>
+          <div class="field-stack full"><label for="agent-base-url">OpenRouter URL</label><input id="agent-base-url" name="base_url" type="url" value="https://openrouter.ai/api/v1" readonly></div>
           <div class="field-stack"><label for="agent-api-key-env">API key environment variable</label><input id="agent-api-key-env" name="api_key_env" maxlength="160" autocomplete="off" spellcheck="false" placeholder="OPENAI_API_KEY" aria-describedby="agent-api-key-note"><small class="field-note" id="agent-api-key-note">Name only—never paste a secret here.</small></div>
           <div class="field-stack"><label for="agent-response-format">Response format</label><select id="agent-response-format" name="response_format"><option value="">Provider default</option><option value="json_schema">JSON schema</option><option value="json_object">JSON object</option><option value="none">None</option></select></div>
           <div class="field-stack full"><label for="agent-persona">Persona</label><textarea id="agent-persona" name="persona" rows="5" maxlength="20000"></textarea></div>

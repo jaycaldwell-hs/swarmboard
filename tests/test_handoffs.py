@@ -23,7 +23,7 @@ def seed_participants(factory, *, kind="human_post", max_rounds=10):
     with factory.begin() as session:
         repo = Repository(session)
         first = repo.list_agents()[0]
-        peers = [repo.create_agent(handle=name, persona="A distinct voice", provider="ollama",
+        peers = [repo.create_agent(handle=name, persona="A distinct voice", provider="openai_compatible",
                                   model="unused", cooldown_seconds=0) for name in ("second", "third", "excluded")]
         ids = [first.id, peers[0].id, peers[1].id]
         repo.get_run(run_id).config = {"agent_ids": ids, "max_agents_per_stimulus": 1, "model_retries": 0}
@@ -203,8 +203,8 @@ async def test_board_api_reports_activity_and_routes_human_reply_to_parent_autho
     db.dispose()
 
 
-@pytest.mark.parametrize("provider,key", [("ollama", "num_predict"), ("openai_compatible", "max_tokens"), ("vertex_gemini", "max_tokens")])
-def test_output_defaults_are_4096_but_respect_explicit_caps_and_run_budget(provider, key):
+def test_output_defaults_are_4096_but_respect_explicit_caps_and_run_budget():
+    provider, key = "openai_compatible", "max_tokens"
     swarm = SwarmEngine(lambda: None)
     run = SimpleNamespace(config={}, max_tokens=10000, tokens_used=0)
     agent = SimpleNamespace(provider=provider, settings={})
@@ -214,5 +214,5 @@ def test_output_defaults_are_4096_but_respect_explicit_caps_and_run_budget(provi
     run.tokens_used = 9900
     assert swarm._sampling_settings(agent, run)[key] == 100
     for seeded in DEFAULT_AGENTS:
-        token_key = "num_predict" if seeded["provider"] == "ollama" else "max_tokens"
-        assert seeded["settings"]["sampling"][token_key] == 4096
+        assert seeded["provider"] == "openai_compatible"
+        assert seeded["settings"]["sampling"]["max_tokens"] == 4096

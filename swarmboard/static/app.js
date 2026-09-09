@@ -138,6 +138,7 @@
     dom.newThreadForm?.addEventListener("submit", createThread);
     dom.runForm?.addEventListener("submit", createRun);
     dom.agentForm?.addEventListener("submit", updateAgent);
+    document.getElementById("agent-provider")?.addEventListener("change", syncAgentProvider);
 
     document.querySelectorAll("[data-close-dialog]").forEach((button) => {
       button.addEventListener("click", () => document.getElementById(button.dataset.closeDialog)?.close());
@@ -349,6 +350,8 @@
     renderMentions();
 
     const run = currentRun();
+    const researchBadge = document.getElementById("active-research-badge");
+    if (researchBadge) researchBadge.hidden = (run?.session_type || run?.config?.session_type) !== "research";
     const runIsOpen = run && ["created", "running", "paused"].includes(normalizedRunState(run.state));
     const terminalRun = run && !runIsOpen;
     const closed = status === "closed";
@@ -567,6 +570,7 @@
           ${metrics.length ? metrics.map(budgetHtml).join("") : '<p class="inspector-note" style="margin-left:0">No budget values reported.</p>'}
         </section>
         <dl class="run-meta">
+          ${(run.session_type || run.config?.session_type) === "research" ? `<div><dt>Research policy</dt><dd>${escapeHtml((run.policy || run.config?.policy)?.profile || "production")}</dd></div>` : ""}
           <div><dt>Updated</dt><dd>${escapeHtml(relativeTime(run.updated_at || run.started_at))}</dd></div>
           <div><dt>Mode</dt><dd>${run.continuous ? "Continuous" : "Manual step"}</dd></div>
           ${run.config?.cadence === "ada_round_robin" ? "<div><dt>Cadence</dt><dd>Each peer → Ada · full shared conversation</dd></div>" : ""}
@@ -739,6 +743,7 @@
         <div class="trace-stat"><dt>Provider / model</dt><dd title="${escapeHtml([turn.provider, turn.model].filter(Boolean).join(" / "))}">${escapeHtml([turn.provider, turn.model].filter(Boolean).join(" / ") || "—")}</dd></div>
         <div class="trace-stat"><dt>Latency</dt><dd>${turn.latency_ms != null ? `${formatCompactNumber(turn.latency_ms)} ms` : "—"}</dd></div>
         <div class="trace-stat"><dt>Tokens</dt><dd>${formatCompactNumber(tokenTotal)}</dd></div>
+        ${turn.session_type === "research" ? `<div class="trace-stat"><dt>Research policy</dt><dd>${escapeHtml(turn.policy_snapshot?.profile || "production")}</dd></div><div class="trace-stat"><dt>Outcome</dt><dd>${escapeHtml(turn.outcome || turn.state)}</dd></div>` : ""}
       </dl>
       <div class="trace-content">
         <section class="trace-summary-grid">
@@ -758,6 +763,7 @@
           </div>
         </section>
         ${traceDetail("Scheduler scores", turn.scheduler_scores)}
+        ${turn.session_type === "research" ? traceDetail("Policy snapshot", turn.policy_snapshot) : ""}
         ${traceDetail("Context snapshot", turn.context_snapshot)}
         ${traceDetail("Sampling settings", { prompt_version: turn.prompt_version, ...(turn.sampling_settings || {}) })}
         ${turn.prompt ? traceDetail("Prompt", turn.prompt) : ""}
@@ -989,6 +995,7 @@
     await withPending(dom.adaSubmit, "Starting…", async () => {
       try {
         const result = await api("/api/sessions", { method: "POST", body: {
+          ...(window.SwarmResearch?.creationOptions(data) || {}),
           title: payload.title, body: payload.body, agent_ids: payload.peer_ids, include_ada: true,
           continuous: payload.continuous, idempotency_key: payload.idempotency_key, cadence: data.get("cadence"),
           max_rounds: payload.limits.max_rounds, max_tokens: payload.limits.max_tokens,
@@ -1038,6 +1045,7 @@
     const number = (name) => Number(data.get(name));
     const payload = {
       thread_id: store.selectedThread.id,
+      ...(window.SwarmResearch?.creationOptions(data) || {}),
       agent_ids: data.getAll("peer_ids"),
       continuous: data.get("continuous") === "on",
       limits: {
@@ -1145,10 +1153,9 @@
     document.getElementById("agent-id").value = agent.id;
     document.getElementById("agent-handle").value = agent.handle || "";
     document.getElementById("agent-role").value = agent.role || "";
-    document.getElementById("agent-provider").value = agent.provider || "";
+    document.getElementById("agent-provider").value = agent.provider === "codex" ? "codex" : "openai_compatible";
     document.getElementById("agent-model").value = agent.model || "";
-    document.getElementById("agent-base-url").value = agent.settings?.base_url || "";
-    document.getElementById("agent-api-key-env").value = agent.settings?.api_key_env || "";
+    syncAgentProvider();
     document.getElementById("agent-response-format").value = ["json_schema", "json_object", "none"].includes(agent.settings?.response_format)
       ? agent.settings.response_format
       : "";
@@ -1163,6 +1170,19 @@
     openDialog(dom.agentDialog);
   }
 
+  function syncAgentProvider() {
+    const codex = document.getElementById("agent-provider").value === "codex";
+    for (const [id, value] of [["agent-base-url", "https://openrouter.ai/api/v1"], ["agent-api-key-env", "OPENROUTER_API_KEY"]]) {
+      const input = document.getElementById(id);
+      input.value = codex ? "" : value;
+      input.readOnly = true;
+      input.closest(".field-stack").hidden = codex;
+    }
+    const model = document.getElementById("agent-model");
+    model.readOnly = codex;
+    if (codex) model.value = "gpt-6-astra";
+  }
+
   async function updateAgent(event) {
     event.preventDefault();
     const submit = event.submitter || dom.agentForm.querySelector("[type='submit']");
@@ -1170,14 +1190,20 @@
     const id = data.get("id");
     const existingAgent = store.agents.find((agent) => String(agent.id) === String(id));
     const settings = { ...(existingAgent?.settings || {}) };
-    settings.base_url = String(data.get("base_url") || "").trim();
-    settings.api_key_env = String(data.get("api_key_env") || "").trim();
+    const provider = String(data.get("provider") || "").trim();
+    if (provider === "codex") {
+      delete settings.base_url;
+      delete settings.api_key_env;
+    } else {
+      settings.base_url = "https://openrouter.ai/api/v1";
+      settings.api_key_env = "OPENROUTER_API_KEY";
+    }
     const responseFormat = String(data.get("response_format") || "");
     if (responseFormat) settings.response_format = responseFormat;
     else if (!existingAgent?.settings?.response_format) delete settings.response_format;
     const payload = {
       role: String(data.get("role") || "").trim(),
-      provider: String(data.get("provider") || "").trim(),
+      provider,
       model: String(data.get("model") || "").trim(),
       persona: String(data.get("persona") || "").trim(),
       cooldown_seconds: Number(data.get("cooldown_seconds")),

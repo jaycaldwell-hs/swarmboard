@@ -26,10 +26,10 @@ def enabled(run) -> bool:
     return bool(run and run.config.get("interaction_mode") == "autonomous")
 
 
-def create_session(repo, *, agents, title="Open board", body=OPENING, seed=None, limits=None, continuous=True, cadence_mode="free", author_handle="human"):
+def create_session(repo, *, agents, title="Open board", body=OPENING, seed=None, limits=None, continuous=True, cadence_mode="free", author_handle="human", session_type="collaboration", policy="production"):
     run = sessions.create_session(repo, agents=agents, title=title, body=body, seed=seed,
                                   limits=limits, continuous=continuous, cadence_mode=cadence_mode,
-                                  author_handle=author_handle)
+                                  author_handle=author_handle, session_type=session_type, policy=policy)
     grant_board_permissions(repo, agents)
     return run
 

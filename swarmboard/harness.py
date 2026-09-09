@@ -143,7 +143,6 @@ async def start_discussion(
     thread = await request(client, "POST", "/api/threads", json={
         "title": title,
         "body": f"@{agent['handle']}, {prompt}",
-        "author_handle": "SYSTEM",
         "idempotency_key": f"persona-harness:{uuid4()}",
     })
     run = await request(client, "POST", "/api/runs", json={

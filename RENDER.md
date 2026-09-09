@@ -62,7 +62,7 @@ forwarded proxy headers.
 `SWARMBOARD_REQUIRE_AUTH=1` fails startup when accounts are absent. Configuring
 login also enables the provider destination restrictions, even outside Render
 or without `SWARMBOARD_HOSTED`. Credentials are bound to the corresponding
-OpenAI, OpenRouter, and xAI HTTPS endpoints. Agent writes and every live dispatch
+the OpenRouter HTTPS endpoint (Astra uses Codex). Agent writes and every live dispatch
 reject arbitrary URLs, private-network destinations, and other environment-secret
 names before resolving a key. Redirects are disabled; custom HTTP headers are
 limited to `HTTP-Referer` and `X-Title`, preventing `Host` or forwarding overrides.

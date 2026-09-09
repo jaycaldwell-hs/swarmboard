@@ -12,6 +12,7 @@ from sqlalchemy import select
 from . import cadence
 from .models import Agent, Experiment, Post, Run, Thread, Turn
 from .repository import InvalidStateError, Repository
+from .run_policy import adapt_agent, is_research, normalize_config, policy_for
 
 TERMINAL = {"stopped", "completed", "failed", "emergency_stopped"}
 
@@ -40,24 +41,32 @@ def retire_scripted_runs(repo: Repository) -> None:
 
 def session_agent(session, run: Run | None, agent):
     if run is None or run.config.get("interaction_mode") != "autonomous":
-        return agent
+        return adapt_agent(run, agent)
     saved = session.get(Experiment, run.id)
     if saved is None or agent.id not in {p["id"] for p in saved.manifest["participants"]}:
         raise InvalidStateError("participant is outside this session")
     # Configuration changes apply to future turns. Captured historical turns stay intact.
-    return SimpleNamespace(
+    last_spoke = None
+    cooldown = 0
+    if is_research(run):
+        cooldown = agent.cooldown_seconds
+        last_spoke = session.scalar(select(Post.created_at).join(Turn, Turn.resulting_post_id == Post.id)
+                                   .where(Turn.run_id == run.id, Turn.agent_id == agent.id)
+                                   .order_by(Post.created_at.desc()).limit(1))
+    return adapt_agent(run, SimpleNamespace(
         id=agent.id, handle=agent.handle, role=agent.role, persona=agent.persona,
         provider=agent.provider, model=agent.model, enabled=agent.enabled,
         settings=copy.deepcopy(agent.settings or {}), permissions=dict(agent.permissions or {}),
-        cooldown_seconds=0, last_spoke_at=None,
-    )
+        cooldown_seconds=cooldown, last_spoke_at=last_spoke,
+    ))
 
 
 def create_session(repo: Repository, *, agents, title="Open board", body="Open-ended interaction",
                    seed=None, limits=None, continuous=True, cadence_mode="free", source_run_id=None,
-                   author_handle="human") -> Run:
+                   author_handle="human", session_type="collaboration", policy="production") -> Run:
     from .autonomy import seed_invitation
 
+    normalized = normalize_config({"session_type": session_type, "policy": policy})
     agents = list({a.id: a for a in agents}.values())
     if not agents or any(not a.enabled or not a.permissions.get("speak", True) for a in agents):
         raise InvalidStateError("choose at least one enabled participant with speaking permission")
@@ -74,7 +83,7 @@ def create_session(repo: Repository, *, agents, title="Open board", body="Open-e
                          per_thread_quota=actual_limits["max_posts"])
     config = {"collaboration": True, "interaction_mode": "autonomous",
               "agent_ids": [a.id for a in agents], "max_agents_per_stimulus": 1,
-              "model_retries": 0, "cadence": cadence_mode, "title": title}
+              "model_retries": 0, "cadence": cadence_mode, "title": title, **normalized}
     if source_run_id:
         config["source_run_id"] = source_run_id
     run = repo.create_run(seed=seed if seed is not None else uuid4().int % (2 ** 31),
@@ -83,7 +92,8 @@ def create_session(repo: Repository, *, agents, title="Open board", body="Open-e
     manifest = {"version": "swarm-session-v1", "opening": {"title": title, "body": body, "author_handle": author_handle},
                 "participants": [{"id": a.id, "handle": a.handle, "provider": a.provider, "model": a.model}
                                  for a in agents],
-                "cadence": cadence_mode, "limits": actual_limits}
+                "cadence": cadence_mode, "limits": actual_limits,
+                "session_type": normalized["session_type"], "policy": copy.deepcopy(normalized["policy"])}
     # Keep the existing table name/schema so old conversations need no destructive migration.
     repo.session.add(Experiment(run_id=run.id, manifest=manifest,
                                 manifest_sha256=digest(manifest), world={}))
@@ -93,7 +103,8 @@ def create_session(repo: Repository, *, agents, title="Open board", body="Open-e
                                idempotency_key=f"session:{run.id}:opening")
     seed_invitation(repo, run, thread, opening.post, key=f"session:{run.id}:opening")
     repo.add_event("session.prepared", run_id=run.id, thread_id=thread.id,
-                   actor_type="human", actor_id=author_handle, payload={"source_run_id": source_run_id})
+                   actor_type="human", actor_id=author_handle,
+                   payload={"source_run_id": source_run_id, **normalized})
     return run
 
 
@@ -113,7 +124,9 @@ def restart(repo: Repository, original: Run, *, seed=None, continuous=None) -> R
                           seed=seed, limits=manifest.get("limits"),
                           continuous=False if continuous is None else continuous,
                           cadence_mode=manifest.get("cadence", original.config.get("cadence", "free")),
-                          source_run_id=original.id, author_handle=opening.get("author_handle", "human"))
+                          source_run_id=original.id, author_handle=opening.get("author_handle", "human"),
+                          session_type=original.config.get("session_type", "collaboration"),
+                          policy=policy_for(original))
 
 
 def prepare_session(repo: Repository, run: Run) -> None:
@@ -161,6 +174,7 @@ def activity(repo: Repository, run_id: str) -> dict:
                         "thread_id": post.thread_id if post else turn.thread_id, "error": turn.error})
     return {"run_id": run.id, "title": title, "state": run.state, "stop_reason": run.stop_reason,
             "archived": archived, "participants": participants,
+            "session_type": run.config.get("session_type", "collaboration"), "policy": policy_for(run),
             "cadence": {**cadence.context(repo, run), "quiet": run.config.get("cadence_quiet", False)} if cadence.enabled(run) else None,
             "metrics": {"turns_used": run.rounds_used, "tokens_used": run.tokens_used,
                         "threads": len(repo.list_threads(run_id=run_id, limit=10000)),

@@ -18,8 +18,6 @@ _SENSITIVE_HEADERS = {
 }
 _HOSTED_PROVIDERS = {
     "openrouter.ai": ("OPENROUTER_API_KEY", {"/api", "/api/v1", "/api/v1/chat/completions"}),
-    "api.openai.com": ("OPENAI_API_KEY", {"", "/v1", "/v1/chat/completions"}),
-    "api.x.ai": ("XAI_API_KEY", {"", "/v1", "/v1/chat/completions"}),
 }
 _HOSTED_HEADERS = frozenset({"http-referer", "x-title"})
 
@@ -75,19 +73,14 @@ def validate_agent_settings(settings: Mapping[str, Any] | None) -> dict[str, Any
 
 
 def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) -> None:
-    """Bind shared-board credentials to fixed destinations, including saved agents.
+    """Validate the supported OpenRouter or Codex destination before reading secrets.
 
-    Unauthenticated local boards retain configurable gateways. Hosting or configuring
-    login enables restrictions, including when a deployment omits its hosted flag.
-    Validate the complete provider/settings pair before resolving any credential.
+    The historical function name is retained for internal callers. The same
+    boundary now applies to local and shared boards: OpenRouter for peers,
+    server-controlled Codex authentication for Astra.
     """
-    # Check only the presence of login configuration; never read its secret value here.
-    if not (any(os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
-                for name in ("SWARMBOARD_HOSTED", "RENDER", "SWARMBOARD_REQUIRE_AUTH"))
-            or "SWARMBOARD_AUTH_USERS" in os.environ):
-        return
     if provider.lower() not in {"codex", "openai_compatible"}:
-        raise ValueError("hosted agents must use codex or openai_compatible")
+        raise ValueError("agents must use Codex/Astra or OpenRouter (openai_compatible)")
     values = validate_agent_settings(settings)
     if provider.lower() == "codex":
         return
@@ -103,7 +96,7 @@ def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) 
         )
     ):
         raise ValueError("hosted provider headers may contain only HTTP-Referer and X-Title with printable ASCII values")
-    base_url = values.get("base_url") or os.getenv("OPENAI_COMPAT_BASE_URL") or "https://api.openai.com"
+    base_url = values.get("base_url") or os.getenv("OPENAI_COMPAT_BASE_URL") or "https://openrouter.ai/api/v1"
     destination_error = "hosted provider URL must use an approved HTTPS provider endpoint"
     if (not isinstance(base_url, str) or any(char.isspace() or ord(char) < 32 for char in base_url)
             or any(char in base_url for char in ("?", "#", "\\"))):

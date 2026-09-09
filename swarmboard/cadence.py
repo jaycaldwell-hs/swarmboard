@@ -60,12 +60,14 @@ def _advance(repo, run, index, *, amount=1, made_posts=False):
     cycle_size = 2 * len(peers)
     active = run.config.get("cadence_cycle_active", False) or made_posts
     wrapped = (index + amount) // cycle_size > index // cycle_size
-    quiet = wrapped and not active
+    from .run_policy import policy_for
+    quiet = wrapped and not active and policy_for(run)["dormancy"]
     run.config = {**run.config, "cadence_index": index + amount,
                   "cadence_cycle_active": False if wrapped else active, "cadence_quiet": quiet}
     if quiet:
-        for thread in repo.session.scalars(select(Thread).where(Thread.run_id == run.id, Thread.status == "active")):
-            repo.set_thread_status(thread.id, "dormant", reason="no new contributions during the peer and Ada rotation")
+        if policy_for(run)["dormancy"]:
+            for thread in repo.session.scalars(select(Thread).where(Thread.run_id == run.id, Thread.status == "active")):
+                repo.set_thread_status(thread.id, "dormant", reason="no new contributions during the peer and Ada rotation")
         repo.add_event("cadence.quiet", run_id=run.id, payload={"next_index": index + amount})
     repo.session.flush()
 

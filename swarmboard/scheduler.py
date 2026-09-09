@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
-from .policies import violates_ping_pong
+from .policies import violates_consecutive_cap, violates_ping_pong
 
 
 _WORD_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9_-]{2,}")
@@ -113,6 +113,9 @@ class SchedulerConfig:
     jitter: float = 0.20
     role_injection_probability: float = 0.24
     minimum_score: float = 0.05
+    consecutive_turn_cap: int | None = None
+    cooldowns: bool = True
+    dormancy: bool = True
 
 
 @dataclass(slots=True)
@@ -182,7 +185,7 @@ class WeightedFairScheduler:
 
         if status == "closed":
             return SchedulingDecision([], [], "thread is closed", decision_seed, wake_allowed=False)
-        if status == "dormant" and kind not in _WAKE_KINDS:
+        if self.config.dormancy and status == "dormant" and kind not in _WAKE_KINDS:
             return SchedulingDecision(
                 [], [], f"{kind or 'unknown'} is not permitted to wake a dormant thread", decision_seed, wake_allowed=False
             )
@@ -286,9 +289,14 @@ class WeightedFairScheduler:
             eligible = False
             reasons.append("two-agent ping-pong limit")
 
+        if violates_consecutive_cap(posts, agent_id, self.config.consecutive_turn_cap):
+            components["consecutive_turn_cap"] = -100.0
+            eligible = False
+            reasons.append("consecutive turn cap reached")
+
         cooldown_seconds = max(0.0, float(getattr(agent, "cooldown_seconds", 0) or 0))
         last_spoke = getattr(agent, "last_spoke_at", None)
-        if cooldown_seconds and isinstance(last_spoke, datetime):
+        if self.config.cooldowns and cooldown_seconds and isinstance(last_spoke, datetime):
             if last_spoke.tzinfo is None:
                 last_spoke = last_spoke.replace(tzinfo=timezone.utc)
             remaining = cooldown_seconds - (now - last_spoke).total_seconds()

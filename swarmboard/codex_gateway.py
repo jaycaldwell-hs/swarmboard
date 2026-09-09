@@ -269,7 +269,7 @@ class CodexGateway:
             usage = TokenUsage(input_tokens, output_tokens, input_tokens + output_tokens)
             latency_ms = round((time.perf_counter() - started) * 1000)
             try:
-                raw = output.read_text(encoding="utf-8")
+                raw = output.read_bytes().decode("utf-8")
             except OSError as exc:
                 raise GatewayError("Codex completed without a final action") from exc
             try:

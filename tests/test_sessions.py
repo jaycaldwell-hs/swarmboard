@@ -25,7 +25,7 @@ def seed_session(factory, **kwargs):
     with factory.begin() as session:
         repo = Repository(session)
         ada = repo.create_agent(handle="ada", provider="codex", model="gpt-6-astra", persona="Ada persona")
-        peer = repo.create_agent(handle="peer", provider="ollama", model="open-model", persona="Peer persona")
+        peer = repo.create_agent(handle="peer", provider="openai_compatible", model="open-model", persona="Peer persona")
         run = autonomy.create_session(repo, agents=[ada, peer], body="@ada, choose a direction.", **kwargs)
         return run.id, ada.id, peer.id
 
@@ -208,7 +208,7 @@ async def test_old_autonomous_sessions_remain_runnable_and_restartable():
     db, factory = make_database()
     with factory.begin() as session:
         repo = Repository(session)
-        agent = repo.create_agent(handle="peer", provider="ollama", model="local", persona="Participant")
+        agent = repo.create_agent(handle="peer", provider="openai_compatible", model="open-model", persona="Participant")
         run = repo.create_run(config={"experiment": True, "interaction_mode": "autonomous", "cadence": "free", "agent_ids": [agent.id]})
         thread = repo.create_thread(title="Earlier session", run_id=run.id)
         post = repo.create_human_post(thread.id, "@peer, continue.")
@@ -283,7 +283,7 @@ async def test_session_api_generic_roster_limits_idempotency_and_removed_researc
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             with app.state.session_factory.begin() as session:
                 repo = Repository(session)
-                ids = [repo.create_agent(handle=handle, provider="ollama", model="same-model", persona="Participant").id for handle in ("z_first", "a_second")]
+                ids = [repo.create_agent(handle=handle, provider="openai_compatible", model="same-model", persona="Participant").id for handle in ("z_first", "a_second")]
             payload = {"agent_ids": ids, "continuous": False, "idempotency_key": "generic-session", "max_rounds": 7,
                        "max_tokens": 1200, "max_duration_seconds": 80}
             created = await client.post("/api/sessions", json=payload)

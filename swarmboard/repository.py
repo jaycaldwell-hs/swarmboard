@@ -7,6 +7,7 @@ unit containing a state change and its audit event by wrapping calls in
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Sequence
@@ -30,11 +31,14 @@ from .models import (
     Thread,
     ThreadStatus,
     Turn,
+    TurnOutcome,
     TurnState,
+    infer_turn_outcome,
     new_uuid,
     normalize_agent_handle,
     utc_now,
 )
+from .run_policy import normalize_config
 
 
 class RepositoryError(RuntimeError):
@@ -146,14 +150,17 @@ class Repository:
         persona: str,
         model: str,
         role: str = "specialist",
-        provider: str = "ollama",
+        provider: str = "openai_compatible",
         settings: Mapping[str, Any] | None = None,
         permissions: Mapping[str, Any] | None = None,
         cooldown_seconds: int = 15,
         enabled: bool = True,
         expertise: Sequence[str] | None = None,
     ) -> Agent:
-        agent_settings = dict(settings or {})
+        agent_settings = dict(settings) if settings is not None else (
+            {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}
+            if provider == "openai_compatible" else {}
+        )
         if expertise is not None:
             agent_settings.setdefault("expertise", list(expertise))
         normalized_handle = normalize_agent_handle(handle)
@@ -265,11 +272,15 @@ class Repository:
         max_cascade_depth: int = 8,
         state: RunState | str = RunState.CREATED,
     ) -> Run:
+        try:
+            normalized_config = normalize_config(config)
+        except ValueError as exc:
+            raise InvalidStateError(str(exc)) from None
         run = Run(
             state=str(state),
             seed=seed,
             continuous=continuous,
-            config=dict(config or {}),
+            config=normalized_config,
             max_rounds=max_rounds,
             max_posts=max_posts,
             max_tokens=max_tokens,
@@ -284,7 +295,11 @@ class Repository:
             "run.created",
             run_id=run.id,
             actor_type="human",
-            payload={"seed": seed, "continuous": continuous},
+            payload={
+                "seed": seed, "continuous": continuous,
+                "session_type": run.config["session_type"],
+                "policy": deepcopy(run.config["policy"]),
+            },
         )
         return run
 
@@ -434,12 +449,17 @@ class Repository:
             turn.state = TurnState.FAILED.value
             turn.claim_token = None
             turn.error = reason
+            turn.outcome = TurnOutcome.REJECTED_BY_POLICY.value
+            turn.rejection_reason = reason
             turn.completed_at = now
             self.add_event(
                 "turn.failed", run_id=run.id, thread_id=turn.thread_id,
                 agent_id=turn.agent_id, stimulus_id=turn.stimulus_id,
                 payload={
                     "turn_id": turn.id, "from": prior_state, "error": reason,
+                    "outcome": turn.outcome, "rejection_reason": turn.rejection_reason,
+                    "session_type": turn.session_type,
+                    "policy_snapshot": deepcopy(turn.policy_snapshot),
                     "terminal_state": run.state,
                     "cancelled_by_run_control": run.state in {
                         RunState.STOPPED.value, RunState.EMERGENCY_STOPPED.value,
@@ -1388,6 +1408,10 @@ class Repository:
             )
             if existing is not None:
                 return existing
+        try:
+            turn_config = normalize_config(self.get_run(run_id).config if run_id else None)
+        except ValueError as exc:
+            raise InvalidStateError(str(exc)) from None
         turn = Turn(
             run_id=run_id,
             thread_id=thread_id,
@@ -1396,6 +1420,8 @@ class Repository:
             triggering_event_id=triggering_event_id,
             idempotency_key=idempotency_key or new_uuid(),
             claim_token=claim_token,
+            session_type=turn_config["session_type"],
+            policy_snapshot=deepcopy(turn_config["policy"]),
             context_post_ids=list(context_post_ids),
             context_snapshot=dict(context_snapshot or {}),
             scheduler_scores=dict(scheduler_scores or {}),
@@ -1421,6 +1447,10 @@ class Repository:
                 "context_post_ids": list(context_post_ids),
                 "scheduler_scores": dict(scheduler_scores or {}),
                 "selection_reason": selection_reason,
+                "session_type": turn.session_type,
+                "policy_snapshot": deepcopy(turn.policy_snapshot),
+                "outcome": turn.outcome,
+                "rejection_reason": turn.rejection_reason,
             },
         )
         return turn
@@ -1483,6 +1513,8 @@ class Repository:
         input_tokens: int = 0,
         output_tokens: int = 0,
         total_tokens: int | None = None,
+        outcome: TurnOutcome | str | None = None,
+        rejection_reason: str | None = None,
     ) -> Turn:
         turn = self.get_turn(turn_id)
         new_state = str(state)
@@ -1492,6 +1524,9 @@ class Repository:
             TurnState.FAILED.value,
         }:
             raise ValueError("finish_turn requires completed, passed, or failed state")
+        terminal_outcome = str(outcome) if outcome is not None else infer_turn_outcome(new_state, error)
+        if terminal_outcome not in {item.value for item in TurnOutcome}:
+            raise ValueError("unknown turn outcome")
         if turn.state in {
             TurnState.COMPLETED.value,
             TurnState.PASSED.value,
@@ -1506,6 +1541,12 @@ class Repository:
         turn.parsed_action = dict(parsed_action) if parsed_action is not None else None
         turn.validated_action = dict(validated_action) if validated_action is not None else None
         turn.error = error[:10_000] if error else None
+        turn.outcome = terminal_outcome
+        turn.rejection_reason = (
+            rejection_reason if rejection_reason is not None else (
+                turn.error if terminal_outcome not in {"executed", "passed"} else None
+            )
+        )
         turn.latency_ms = latency_ms
         turn.input_tokens = input_tokens
         turn.output_tokens = output_tokens
@@ -1526,6 +1567,10 @@ class Repository:
                 "output_tokens": output_tokens,
                 "total_tokens": turn.total_tokens,
                 "error": turn.error,
+                "outcome": turn.outcome,
+                "rejection_reason": turn.rejection_reason,
+                "session_type": turn.session_type,
+                "policy_snapshot": deepcopy(turn.policy_snapshot),
             },
         )
         if turn.run_id is not None:
@@ -1666,6 +1711,8 @@ class Repository:
             # record; marking the interrupted call failed preserves exact history.
             turn.state = TurnState.FAILED.value
             turn.error = "model call interrupted by process restart"
+            turn.outcome = TurnOutcome.PROVIDER_FAILURE.value
+            turn.rejection_reason = turn.error
             turn.completed_at = now
             turns_failed += 1
             self.add_event(
@@ -1674,7 +1721,12 @@ class Repository:
                 thread_id=turn.thread_id,
                 agent_id=turn.agent_id,
                 stimulus_id=turn.stimulus_id,
-                payload={"turn_id": turn.id, "stimulus_recovered": turn.stimulus_id in stale_ids},
+                payload={
+                    "turn_id": turn.id, "stimulus_recovered": turn.stimulus_id in stale_ids,
+                    "outcome": turn.outcome, "rejection_reason": turn.rejection_reason,
+                    "session_type": turn.session_type,
+                    "policy_snapshot": deepcopy(turn.policy_snapshot),
+                },
             )
         self.session.flush()
         return RecoveryResult(requeued, failed, turns_failed)

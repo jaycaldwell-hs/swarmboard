@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
-import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -42,7 +41,7 @@ from .personas import DEFAULT_AGENTS
 from .persona_context import load_persona
 from .harness import codex_model_source, persona_spec
 from .repository import InvalidStateError, NotFoundError, Repository, RepositoryError
-from .schemas import AgentCreate, AgentUpdate, HumanPostCreate
+from .schemas import AgentCreate, AgentUpdate, HumanPostCreate, SessionPolicyInput
 from .stimuli import plan_reactive_stimuli
 
 
@@ -78,7 +77,7 @@ class RunLimits(APIInput):
     max_cascade_depth: int = Field(default=6, ge=0, le=100)
 
 
-class NewRunRequest(APIInput):
+class NewRunRequest(SessionPolicyInput):
     thread_id: str
     seed: int = 0
     continuous: bool = False
@@ -88,7 +87,7 @@ class NewRunRequest(APIInput):
     agent_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
 
 
-class AdaSessionRequest(APIInput):
+class AdaSessionRequest(SessionPolicyInput):
     title: str = Field(min_length=1, max_length=300)
     body: str = Field(min_length=1, max_length=12_000)
     peer_ids: list[str] = Field(min_length=1, max_length=100)
@@ -207,6 +206,8 @@ def _run_json(run: Run, *, thread_id: str | None = None) -> dict[str, Any]:
             "continuous": run.continuous,
             "seed": run.seed,
             "config": run.config,
+            "session_type": run.config.get("session_type", "collaboration"),
+            "policy": run.config.get("policy", {}),
             "limits": limits,
             "counters": counters,
             "max_rounds": run.max_rounds,
@@ -299,6 +300,10 @@ def _turn_json(turn: Turn) -> dict[str, Any]:
             "triggering_event_id": turn.triggering_event_id,
             "resulting_post_id": turn.resulting_post_id,
             "state": turn.state,
+            "session_type": turn.session_type,
+            "policy_snapshot": turn.policy_snapshot,
+            "outcome": turn.outcome,
+            "rejection_reason": turn.rejection_reason,
             "idempotency_key": turn.idempotency_key,
             "claim_token": turn.claim_token,
             "context_post_ids": turn.context_post_ids,
@@ -482,18 +487,24 @@ def create_app(
                     provider = str(spec["provider"])
                     agent_settings = copy.deepcopy(spec["settings"])
                     agent_settings.setdefault("timeout_seconds", settings.model_timeout_seconds)
-                    if provider == "ollama":
-                        agent_settings["base_url"] = settings.ollama_base_url
                     repo.create_agent(
                         handle=spec["handle"],
                         persona=spec["persona"],
                         role=spec["role"],
                         provider=provider,
-                        model=str(spec["model"] or settings.ollama_model),
+                        model=str(spec["model"]),
                         settings=agent_settings,
                         permissions=spec["permissions"],
                         cooldown_seconds=15,
                     )
+            for agent in repo.list_agents(enabled_only=True):
+                try:
+                    validate_hosted_provider(agent.provider, agent.settings)
+                except ValueError:
+                    agent.enabled = False
+                    repo.add_event("agent.provider_disabled", agent_id=agent.id,
+                        actor_type="system", payload={"fields": ["enabled"],
+                            "reason": "provider configuration is no longer supported"})
         if recover_on_start:
             await swarm.recover()
         try:
@@ -635,7 +646,7 @@ def create_app(
             result = repo.create_human_thread(
                 title=payload.title,
                 body=payload.body,
-                author_handle=human_handle(request, payload.author_handle),
+                author_handle=ordinary_human_handle(repo, request, payload.author_handle),
                 idempotency_key=request_key(request, payload.idempotency_key),
             )
             output = {
@@ -646,6 +657,18 @@ def create_app(
         await publish_since(before)
         return output
 
+    def ordinary_human_handle(repo: Repository, request: Request, fallback: str) -> str:
+        handle = human_handle(request, fallback)
+        if getattr(request.state, "authenticated_user", None) is not None:
+            return handle
+        # This ordinary human endpoint cannot create system authors or disguised
+        # agent posts. Research impersonation requires its own attributed path.
+        candidate = handle.lstrip("@").casefold()
+        participant = repo.session.scalar(select(Agent.id).where(func.lower(Agent.handle) == candidate).limit(1))
+        if candidate == "system" or participant is not None:
+            raise HTTPException(422, "human posts cannot use a system or participant handle")
+        return handle
+
     @app.post("/api/threads/{thread_id}/posts", status_code=status.HTTP_201_CREATED)
     async def create_post(thread_id: str, payload: HumanPostCreate, request: Request) -> dict[str, Any]:
         with factory.begin() as session:
@@ -655,7 +678,7 @@ def create_app(
                 thread_id,
                 payload.body,
                 parent_post_id=payload.parent_post_id,
-                author_handle=human_handle(request, payload.author_handle),
+                author_handle=ordinary_human_handle(repo, request, payload.author_handle),
                 idempotency_key=request_key(request, payload.idempotency_key),
             )
             thread = repo.get_thread(thread_id)
@@ -804,7 +827,8 @@ def create_app(
     @app.post("/api/personas/ada/sessions", status_code=status.HTTP_201_CREATED)
     async def start_ada_session(payload: AdaSessionRequest, request: Request) -> dict[str, Any]:
         key = request_key(request, f"ada-session:{payload.idempotency_key}")
-        fingerprint = hashlib.sha256(payload.model_dump_json().encode()).hexdigest()
+        fingerprint = hashlib.sha256(payload.model_dump_json(
+            exclude={"session_type", "policy"} if payload.session_type == "collaboration" else None).encode()).hexdigest()
         with factory.begin() as session:
             before = _latest_event_id(session)
             repo = Repository(session)
@@ -830,7 +854,8 @@ def create_app(
                 thread = repo.get_thread(opening.post.thread_id)
                 run = repo.create_run(
                     seed=41, continuous=payload.continuous,
-                    config={"max_agents_per_stimulus": 1, "model_retries": 1, "agent_ids": [ada.id, *(peer.id for peer in peers)]},
+                    config={"max_agents_per_stimulus": 1, "model_retries": 1, "agent_ids": [ada.id, *(peer.id for peer in peers)],
+                            "session_type": payload.session_type, "policy": payload.policy},
                     **payload.limits.model_dump(),
                 )
                 thread.run_id = run.id
@@ -906,6 +931,8 @@ def create_app(
                 seed=payload.seed,
                 continuous=payload.continuous,
                 config={
+                    "session_type": payload.session_type,
+                    "policy": payload.policy,
                     "max_agents_per_stimulus": payload.max_agents_per_stimulus,
                     "model_retries": payload.model_retries,
                     **({"agent_ids": list(dict.fromkeys(payload.agent_ids))} if payload.agent_ids is not None else {}),
@@ -1074,18 +1101,6 @@ def create_app(
                 Event.event_type == "provider.response").order_by(Event.id))
             return {**_turn_json(turn), "provider_responses": [event.payload for event in responses
                                                              if event.payload.get("turn_id") == turn_id]}
-
-    @app.get("/api/providers/ollama")
-    async def ollama_status() -> dict[str, Any]:
-        try:
-            async with httpx.AsyncClient(timeout=3.0) as client:
-                response = await client.get(f"{settings.ollama_base_url}/api/tags")
-                response.raise_for_status()
-                payload = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            return {"available": False, "base_url": settings.ollama_base_url, "error": exc.__class__.__name__}
-        models = [item.get("name") for item in payload.get("models", []) if isinstance(item, dict)]
-        return {"available": True, "base_url": settings.ollama_base_url, "models": models}
 
     @app.get("/api/events")
     async def event_stream(

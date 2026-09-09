@@ -14,7 +14,8 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from .models import Base, normalize_agent_handle
+from .models import Base, infer_turn_outcome, normalize_agent_handle
+from .run_policy import normalize_config
 
 
 def default_database_url() -> str:
@@ -97,6 +98,56 @@ def init_db(bind: Engine | None = None) -> None:
             connection.exec_driver_sql(
                 "ALTER TABLE turns ADD COLUMN claim_token VARCHAR(36)"
             )
+
+        for column, declaration in {
+            "session_type": "VARCHAR(24) NOT NULL DEFAULT 'collaboration'",
+            "policy_snapshot": "JSON NOT NULL DEFAULT '{}'",
+            "outcome": "VARCHAR(32)",
+            "rejection_reason": "TEXT",
+        }.items():
+            if column not in turn_columns:
+                connection.exec_driver_sql(
+                    f"ALTER TABLE turns ADD COLUMN {column} {declaration}"
+                )
+
+        # Upgrade the materialized records only. Historical events are immutable
+        # facts and must never be rewritten to resemble newly captured traces.
+        run_configs: dict[str, dict[str, object]] = {}
+        for row in connection.exec_driver_sql("SELECT id, config FROM runs").mappings():
+            prior_config = json.loads(row["config"])
+            normalized_config = normalize_config(prior_config)
+            run_configs[row["id"]] = normalized_config
+            if normalized_config != prior_config:
+                connection.exec_driver_sql(
+                    "UPDATE runs SET config = ? WHERE id = ?",
+                    (json.dumps(normalized_config), row["id"]),
+                )
+        default_config = normalize_config(None)
+        historical_turns = list(connection.exec_driver_sql(
+            "SELECT id, run_id, state, error, policy_snapshot, outcome, rejection_reason "
+            "FROM turns WHERE outcome IS NULL OR policy_snapshot IS NULL "
+            "OR policy_snapshot = '{}'"
+        ).mappings())
+        for row in historical_turns:
+            prior_policy = json.loads(row["policy_snapshot"]) if row["policy_snapshot"] else None
+            if not prior_policy:
+                config = run_configs.get(row["run_id"], default_config)
+                connection.exec_driver_sql(
+                    "UPDATE turns SET session_type = ?, policy_snapshot = ? WHERE id = ?",
+                    (config["session_type"], json.dumps(config["policy"]), row["id"]),
+                )
+            outcome = row["outcome"] or infer_turn_outcome(row["state"], row["error"])
+            if row["outcome"] is None and outcome is not None:
+                connection.exec_driver_sql(
+                    "UPDATE turns SET outcome = ?, rejection_reason = ? WHERE id = ?",
+                    (
+                        outcome,
+                        row["rejection_reason"] or (
+                            row["error"] if outcome not in {"executed", "passed"} else None
+                        ),
+                        row["id"],
+                    ),
+                )
 
         # Mentions use case-folded handles, so persistence must use the same
         # identity.  Preserve legacy case-colliding agents by keeping the first

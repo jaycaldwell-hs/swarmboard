@@ -29,7 +29,7 @@
     ).join("") || '<p class="muted">No enabled participants.</p>';
     const runs = state.runs.filter(r => r.config?.collaboration || r.config?.experiment || r.config?.interaction_mode === "autonomous");
     $("session-count").textContent = `(${runs.length})`;
-    $("sessions").innerHTML = runs.map(run => `<button class="session ${selected === run.id ? "selected" : ""}" data-run="${esc(run.id)}">${esc(run.config.title || run.config.scenario_name || "Session")}<small>${esc(run.state)}${archived(run) ? " · Archived" : ""}</small></button>`).join("") || '<p class="muted">No sessions yet.</p>';
+    $("sessions").innerHTML = runs.map(run => `<button class="session ${selected === run.id ? "selected" : ""}" data-run="${esc(run.id)}">${esc(run.config.title || run.config.scenario_name || "Session")}<small>${esc(run.state)}${archived(run) ? " · Archived" : ""}${(run.session_type || run.config?.session_type) === "research" ? ' · <span class="research-badge">Research</span>' : ""}</small></button>`).join("") || '<p class="muted">No sessions yet.</p>';
     $("report").hidden = !selected;
     if (selected) {
       const runId = selected;
@@ -42,6 +42,8 @@
     $("report").hidden = false;
     $("report-title").textContent = data.title;
     $("report-state").textContent = `${data.archived ? "Archived · " : ""}${data.state}${data.stop_reason ? " · " + data.stop_reason : ""}`;
+    $("report-policy").hidden = data.session_type !== "research";
+    $("report-policy").textContent = data.session_type === "research" ? `Research · ${data.policy?.profile || "production"} policy` : "";
     $("thread-link").href = run?.thread_id ? `/#thread=${encodeURIComponent(run.thread_id)}` : "/";
     const rotation = data.cadence;
     $("cadence-note").textContent = rotation
@@ -82,6 +84,7 @@
       $("create").disabled = true;
       try {
         const result = await api("/api/sessions", {
+          ...(window.SwarmResearch?.creationOptions(form) || {}),
           agent_ids:agents, title:form.get("title"), body:form.get("body"), cadence:form.get("cadence"),
           continuous:form.get("continuous") === "on", max_rounds:Number(form.get("max_rounds")),
           max_tokens:Number(form.get("max_tokens")), max_duration_seconds:Number(form.get("max_duration_seconds")),

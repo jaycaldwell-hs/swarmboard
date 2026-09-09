@@ -84,7 +84,8 @@ class AuthSettings:
 
 
 def human_handle(request: Request, fallback: str = "human") -> str:
-    return getattr(request.state, "authenticated_user", None) or fallback
+    return (getattr(request.state, "authenticated_user", None)
+            or os.getenv("SWARMBOARD_LOCAL_OPERATOR") or fallback)
 
 
 def request_key(request: Request, key: str | None) -> str | None:
@@ -131,7 +132,8 @@ class BasicAuthMiddleware:
         self.audit = audit
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in {"http", "websocket"} or not self.settings.users:
+        local_operator = os.getenv("SWARMBOARD_LOCAL_OPERATOR")
+        if scope["type"] not in {"http", "websocket"} or (not self.settings.users and not local_operator):
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
@@ -164,6 +166,14 @@ class BasicAuthMiddleware:
                         # log exception text that might contain request data.
                         _logger.error("Could not record authenticated human action")
             await send(message)
+
+        if not self.settings.users:
+            if not _USERNAME.fullmatch(local_operator or "") or local_operator == "SYSTEM":
+                await JSONResponse({"detail": "Invalid local operator identity"}, status_code=503)(scope, receive, send)
+                return
+            scope.setdefault("state", {})["authenticated_user"] = local_operator
+            await self.app(scope, receive, private_send)
+            return
 
         public_health = scope["path"] == "/health" and scope["method"] in {"GET", "HEAD"}
         if not public_health:

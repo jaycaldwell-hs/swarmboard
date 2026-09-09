@@ -123,6 +123,45 @@ class TurnState(StringEnum):
     FAILED = "failed"
 
 
+class TurnOutcome(StringEnum):
+    EXECUTED = "executed"
+    PASSED = "passed"
+    REJECTED_BY_POLICY = "rejected_by_policy"
+    INVALID_OUTPUT = "invalid_output"
+    PROVIDER_FAILURE = "provider_failure"
+
+
+def infer_turn_outcome(state: str, error: str | None = None) -> str | None:
+    """Classify legacy terminal turns without changing their captured output.
+
+    New callers may supply a precise outcome. Historical rows only have their
+    lifecycle state and sanitized error, so unknown failures retain the broad
+    provider-failure category rather than inventing a successful action.
+    """
+
+    if state == TurnState.COMPLETED.value:
+        return TurnOutcome.EXECUTED.value
+    if state == TurnState.PASSED.value:
+        return TurnOutcome.PASSED.value
+    if state != TurnState.FAILED.value:
+        return None
+    reason = (error or "").casefold()
+    if any(marker in reason for marker in (
+        "invalid json", "invalid agent action", "bare json object",
+        "duplicate json key", "model returned an empty response",
+        "model response must", "structuredoutputerror", "schema validation",
+    )):
+        return TurnOutcome.INVALID_OUTPUT.value
+    if any(marker in reason for marker in (
+        "policy", "budget", "quota", "not permitted", "permission",
+        "no longer permitted", "disabled", "closed thread", "thread is closed",
+        "run became", "emergency stop", "run stopped", "run completed",
+        "cooldown", "ping-pong",
+    )):
+        return TurnOutcome.REJECTED_BY_POLICY.value
+    return TurnOutcome.PROVIDER_FAILURE.value
+
+
 class RunState(StringEnum):
     CREATED = "created"
     RUNNING = "running"
@@ -150,7 +189,7 @@ class Agent(UUIDMixin, TimestampMixin, Base):
     handle: Mapped[str] = mapped_column(String(80, collation="NOCASE"), nullable=False)
     persona: Mapped[str] = mapped_column(Text, nullable=False)
     role: Mapped[str] = mapped_column(String(80), nullable=False, default="specialist")
-    provider: Mapped[str] = mapped_column(String(80), nullable=False, default="ollama")
+    provider: Mapped[str] = mapped_column(String(80), nullable=False, default="openai_compatible")
     model: Mapped[str] = mapped_column(String(255), nullable=False)
     settings: Mapped[dict[str, Any]] = mapped_column(
         MutableDict.as_mutable(JSON), default=dict, nullable=False
@@ -399,6 +438,12 @@ class Turn(UUIDMixin, Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), default=new_uuid, unique=True)
     claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    session_type: Mapped[str] = mapped_column(
+        String(24), default="collaboration", nullable=False
+    )
+    policy_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     context_post_ids: Mapped[list[str]] = mapped_column(
         MutableList.as_mutable(JSON), default=list, nullable=False
@@ -487,9 +532,11 @@ __all__ = [
     "Thread",
     "ThreadStatus",
     "Turn",
+    "TurnOutcome",
     "TurnState",
     "UTCDateTime",
     "new_uuid",
+    "infer_turn_outcome",
     "normalize_agent_handle",
     "utc_now",
 ]

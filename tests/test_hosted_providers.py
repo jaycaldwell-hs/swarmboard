@@ -17,8 +17,6 @@ def isolated_hosted_env(monkeypatch):
 
 @pytest.mark.parametrize("host,prefix,key", [
     ("openrouter.ai", "/api", "OPENROUTER_API_KEY"),
-    ("api.openai.com", "", "OPENAI_API_KEY"),
-    ("api.x.ai", "", "XAI_API_KEY"),
 ])
 @pytest.mark.parametrize("suffix", ["", "/", "/v1", "/v1/", "/v1/chat/completions", "/v1/chat/completions/"])
 def test_hosted_allows_only_expected_provider_paths(monkeypatch, host, prefix, key, suffix):
@@ -33,21 +31,22 @@ def test_hosted_allows_only_expected_provider_paths(monkeypatch, host, prefix, k
 def test_hosted_activation_and_normalized_default_tls_origin(monkeypatch, flag, value):
     monkeypatch.setenv(flag, value)
     validate_hosted_provider("codex", {})
-    validate_hosted_provider("openai_compatible", {"base_url": "https://API.OPENAI.COM:443/v1/", "api_key_env": "OPENAI_API_KEY"})
-    with pytest.raises(ValueError, match="hosted agents"):
+    validate_hosted_provider("openai_compatible", {"base_url": "https://OPENROUTER.AI:443/api/v1/", "api_key_env": "OPENROUTER_API_KEY"})
+    with pytest.raises(ValueError, match="Codex/Astra or OpenRouter"):
         validate_hosted_provider("ollama", {})
 
 
 @pytest.mark.parametrize("base_url", [
-    "https://attacker.test/v1", "http://api.openai.com/v1", "https://api.openai.com:8443/v1",
+    "https://api.openai.com/v1", "https://api.x.ai/v1",
+    "https://attacker.test/v1", "http://openrouter.ai/api/v1", "https://openrouter.ai:8443/v1",
     "http://127.0.0.1/v1", "http://localhost/v1", "http://10.0.0.1/v1",
     "http://169.254.169.254/latest/meta-data", "http://[::1]/v1", "http://[fd00::1]/v1",
-    "https://api.openai.com.:443/v1", "https://api.openai.com.attacker.test/v1",
-    "https://api.openai.com@attacker.test/v1", "https://attacker@api.openai.com/v1",
-    "https://api.openai.com/v1?secret=1", "https://api.openai.com/v1?", "https://api.openai.com/v1#",
-    "https://api.openai.com/v1/../anything", "https://api.openai.com/%76%31", "https://api.openai.com//v1",
-    "https://api.openai.com/v1//", "https://api.openai.com/v1/chat", "https://openrouter.ai/v1",
-    "https://api.openai.com\\@attacker.test/v1", " https://api.openai.com/v1", "https://api.openai.com\n/v1",
+    "https://openrouter.ai.:443/v1", "https://openrouter.ai.attacker.test/v1",
+    "https://openrouter.ai@attacker.test/v1", "https://attacker@openrouter.ai/api/v1",
+    "https://openrouter.ai/api/v1?secret=1", "https://openrouter.ai/api/v1?", "https://openrouter.ai/api/v1#",
+    "https://openrouter.ai/api/v1/../anything", "https://openrouter.ai/%76%31", "https://openrouter.ai//v1",
+    "https://openrouter.ai/api/v1//", "https://openrouter.ai/api/v1/chat", "https://openrouter.ai/v1",
+    "https://openrouter.ai\\@attacker.test/v1", " https://openrouter.ai/api/v1", "https://openrouter.ai\n/v1",
     "https://[invalid", "file:///var/data/swarmboard.db", 123,
 ])
 @pytest.mark.asyncio
@@ -55,7 +54,7 @@ async def test_imported_bad_provider_urls_fail_before_any_client_creation(monkey
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
     monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
-        "base_url": base_url, "api_key_env": "OPENAI_API_KEY",
+        "base_url": base_url, "api_key_env": "OPENROUTER_API_KEY",
     })
     with pytest.raises(GatewayError, match="approved HTTPS provider") as exc:
         await ModelGateway().complete(agent, [{"role": "user", "content": "Do not send."}])
@@ -63,7 +62,7 @@ async def test_imported_bad_provider_urls_fail_before_any_client_creation(monkey
 
 
 @pytest.mark.parametrize("key", ["SWARMBOARD_AUTH_USERS", "SWARMBOARD_PERSONA_BUNDLE_B64", "RENDER_API_KEY", "SWARMBOARD_CODEX_API_KEY",
-                                 "OPENROUTER_API_KEY", "XAI_API_KEY", "CUSTOM_API_KEY", "", None])
+                                 "OPENAI_API_KEY", "XAI_API_KEY", "CUSTOM_API_KEY", "", None])
 @pytest.mark.asyncio
 async def test_arbitrary_secret_names_fail_before_environment_resolution(monkeypatch, key):
     import os
@@ -79,7 +78,7 @@ async def test_arbitrary_secret_names_fail_before_environment_resolution(monkeyp
     monkeypatch.setattr("swarmboard.gateways.os.getenv", guarded_getenv)
     monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
-        "base_url": "https://api.openai.com/v1", "api_key_env": key,
+        "base_url": "https://openrouter.ai/api/v1", "api_key_env": key,
     })
     with pytest.raises(GatewayError, match="matching API key environment variable"):
         await ModelGateway().complete(agent, [{"role": "user", "content": "Do not send."}])
@@ -90,23 +89,23 @@ async def test_arbitrary_secret_names_fail_before_environment_resolution(monkeyp
 async def test_hosted_rejects_other_gateway_types(monkeypatch, provider):
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
     monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
-    with pytest.raises(GatewayError, match="hosted agents"):
+    with pytest.raises(GatewayError, match="Codex/Astra or OpenRouter"):
         await ModelGateway().complete(SimpleNamespace(provider=provider, model="test", settings={}), [])
 
 
 def test_hosted_validates_default_base_url_and_imported_literal_credentials(monkeypatch):
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
-    validate_hosted_provider("openai_compatible", {"api_key_env": "OPENAI_API_KEY"})
+    validate_hosted_provider("openai_compatible", {"api_key_env": "OPENROUTER_API_KEY"})
     monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "https://attacker.test")
     with pytest.raises(ValueError, match="approved HTTPS provider"):
-        validate_hosted_provider("openai_compatible", {"api_key_env": "OPENAI_API_KEY"})
+        validate_hosted_provider("openai_compatible", {"api_key_env": "OPENROUTER_API_KEY"})
     with pytest.raises(ValueError, match="literal credentials"):
-        validate_hosted_provider("openai_compatible", {"base_url": "https://api.openai.com", "api_key_env": "OPENAI_API_KEY",
+        validate_hosted_provider("openai_compatible", {"base_url": "https://openrouter.ai", "api_key_env": "OPENROUTER_API_KEY",
                                                        "headers": {"Authorization": "Bearer imported-secret"}})
 
 
 @pytest.mark.asyncio
-async def test_local_custom_provider_and_environment_name_still_work(monkeypatch):
+async def test_local_boards_reject_custom_providers_and_environment_names(monkeypatch):
     monkeypatch.setenv("CUSTOM_PROVIDER_KEY", "local-test-key")
     seen = []
 
@@ -118,9 +117,11 @@ async def test_local_custom_provider_and_environment_name_still_work(monkeypatch
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
         "base_url": "http://custom.test:8080", "api_key_env": "CUSTOM_PROVIDER_KEY",
     })
-    assert await ModelGateway().complete(agent, []) == "local-result"
-    assert seen == [("http://custom.test:8080", "Bearer local-test-key")]
-    validate_hosted_provider("ollama", {"base_url": "http://localhost:11434"})
+    with pytest.raises(GatewayError, match="approved HTTPS provider"):
+        await ModelGateway().complete(agent, [])
+    assert seen == []
+    with pytest.raises(ValueError, match="Codex/Astra or OpenRouter"):
+        validate_hosted_provider("ollama", {"base_url": "http://localhost:11434"})
 
 
 @pytest.mark.parametrize("auth_flag", ["SWARMBOARD_REQUIRE_AUTH", "SWARMBOARD_AUTH_USERS"])
@@ -142,7 +143,7 @@ async def test_authenticated_gateway_rejects_arbitrary_secret_before_reading_it(
     monkeypatch.setattr("swarmboard.gateways.os.getenv", guarded_getenv)
     monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
-        "base_url": "https://api.openai.com/v1", "api_key_env": "SWARMBOARD_AUTH_USERS",
+        "base_url": "https://openrouter.ai/api/v1", "api_key_env": "SWARMBOARD_AUTH_USERS",
     })
     with pytest.raises(GatewayError, match="matching API key environment variable"):
         await ModelGateway().complete(agent, [])
@@ -163,14 +164,14 @@ async def test_hosted_rejects_header_overrides_before_resolving_credentials(monk
     original_getenv = os.getenv
 
     def guarded_getenv(name, default=None):
-        if name == "OPENAI_API_KEY":
+        if name == "OPENROUTER_API_KEY":
             pytest.fail("credential was read before validating headers")
         return original_getenv(name, default)
 
     monkeypatch.setattr("swarmboard.gateways.os.getenv", guarded_getenv)
     monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
-        "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "headers": headers,
+        "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY", "headers": headers,
     })
     with pytest.raises(GatewayError, match="provider headers") as exc:
         await ModelGateway().complete(agent, [])
@@ -180,7 +181,7 @@ async def test_hosted_rejects_header_overrides_before_resolving_credentials(monk
 @pytest.mark.asyncio
 async def test_hosted_allowed_request_uses_expected_key_without_following_redirect(monkeypatch):
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
-    monkeypatch.setenv("OPENAI_API_KEY", "hosted-test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "hosted-test-key")
     requests = []
 
     async def redirect(request):
@@ -194,14 +195,14 @@ async def test_hosted_allowed_request_uses_expected_key_without_following_redire
 
     monkeypatch.setattr(OpenAICompatibleGateway, "__init__", init_with_transport)
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
-        "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+        "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY",
         "headers": {"HTTP-Referer": "https://board.test", "x-title": "Swarmboard"},
     })
     with pytest.raises(GatewayError):
         await ModelGateway().complete(agent, [{"role": "user", "content": "Test request."}])
     assert len(requests) == 1
-    assert str(requests[0].url) == "https://api.openai.com/v1/chat/completions"
-    assert requests[0].headers["Host"] == "api.openai.com"
+    assert str(requests[0].url) == "https://openrouter.ai/api/v1/chat/completions"
+    assert requests[0].headers["Host"] == "openrouter.ai"
     assert requests[0].headers["Authorization"] == "Bearer hosted-test-key"
     assert requests[0].headers["HTTP-Referer"] == "https://board.test"
     assert requests[0].headers["X-Title"] == "Swarmboard"

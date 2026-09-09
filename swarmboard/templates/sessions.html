@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sessions · Swarmboard</title>
   <link rel="stylesheet" href="/static/sessions.css">
+  <link rel="stylesheet" href="/static/research.css">
+  <script src="/static/research.js" defer></script>
   <script src="/static/sessions.js" defer></script>
 </head>
 <body>
@@ -41,6 +43,7 @@
           <legend>Participants</legend>
           <div id="peers"></div>
         </fieldset>
+        {% include "research_options.html" %}
         <details>
           <summary>Session limits</summary>
           <div class="fields">
@@ -64,6 +67,7 @@
     <div class="report-heading">
       <div>
         <p class="eyebrow" id="report-state"></p>
+        <p class="research-profile" id="report-policy" hidden></p>
         <h2 id="report-title"></h2>
       </div>
       <nav id="controls"></nav>

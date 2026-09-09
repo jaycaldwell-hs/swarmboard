@@ -110,7 +110,7 @@ def seed_conversation(
             handle="tester",
             persona="Offer one useful proposal, then pass when the script says to pass.",
             role="proposer",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
@@ -154,7 +154,7 @@ async def test_human_post_produces_a_bounded_threaded_exchange() -> None:
             handle="reviewer",
             persona="Review once, and pass when no distinct contribution is needed.",
             role="critic",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
@@ -282,7 +282,7 @@ async def test_selection_respects_single_remaining_round() -> None:
             handle="second-round-candidate",
             persona="Pass if selected.",
             role="critic",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
@@ -322,7 +322,7 @@ async def test_selection_respects_single_remaining_thread_slot() -> None:
             handle="second-thread-candidate",
             persona="Offer a distinct reply.",
             role="critic",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
@@ -920,7 +920,7 @@ async def test_virtual_time_and_reactive_mentions_are_durable() -> None:
             handle="expert",
             persona="Verify direct questions.",
             role="fact-checker",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
@@ -1070,7 +1070,7 @@ async def test_rerun_preserves_unattached_opening_post_budget_baseline() -> None
             handle="budget-tester",
             persona="Pass after observing the input.",
             role="critic",
-            provider="ollama",
+            provider="openai_compatible",
             model="unused-in-tests",
             cooldown_seconds=0,
         )
