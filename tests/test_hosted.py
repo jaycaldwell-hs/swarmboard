@@ -156,3 +156,47 @@ def test_hosted_startup_rejects_missing_secrets_before_materializing_persona(hos
         create_hosted_app(settings)
     assert not settings.persona_dir.exists()
     assert not (settings.persona_dir.parent / "board.db").exists()
+
+
+def test_root_only_transfer_is_read_before_service_drops_privileges(hosted_configuration, monkeypatch):
+    import pwd
+    from types import SimpleNamespace
+    from swarmboard import hosted, migration
+
+    settings, _ = hosted_configuration
+    from sqlalchemy.engine import make_url
+    snapshot = Path(make_url(settings.database_url).database).parent / "incoming.db"
+    snapshot.write_bytes(b"verified transfer fixture")
+    identity = {"uid": 0, "gid": 0, "groups": [0]}
+    ownership = {}
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=10001, pw_gid=10001))
+    monkeypatch.setattr(hosted.os, "getuid", lambda: identity["uid"])
+    monkeypatch.setattr(hosted.os, "chown", lambda path, uid, gid, **kwargs: ownership.update({Path(path): (uid, gid)}))
+    monkeypatch.setattr(hosted.os, "fchown", lambda descriptor, uid, gid: None)
+    monkeypatch.setattr(hosted.os, "setgroups", lambda groups: identity.update(groups=groups))
+    monkeypatch.setattr(hosted.os, "setgid", lambda gid: identity.update(gid=gid))
+    monkeypatch.setattr(hosted.os, "setuid", lambda uid: identity.update(uid=uid))
+
+    def read_private_transfer(database):
+        if identity["uid"] != 0:
+            raise PermissionError("Render transfer is readable only by the initial container user")
+        return snapshot
+
+    calls = []
+
+    def import_as_service(database, source):
+        assert identity == {"uid": 10001, "gid": 10001, "groups": []}
+        assert source == snapshot and ownership[source] == (10001, 10001)
+        calls.append("import")
+
+    def serve_as_service(app, **kwargs):
+        assert identity["uid"] == 10001
+        assert calls == ["import", "backup", "app"]
+        assert kwargs["workers"] == 1
+
+    monkeypatch.setattr(migration, "materialize_import_bundle", read_private_transfer)
+    monkeypatch.setattr(migration, "import_database", import_as_service)
+    monkeypatch.setattr(hosted, "backup_database", lambda database: calls.append("backup"))
+    monkeypatch.setattr(hosted, "create_hosted_app", lambda config: calls.append("app"))
+    monkeypatch.setattr("uvicorn.run", serve_as_service)
+    hosted.main()

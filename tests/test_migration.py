@@ -316,3 +316,28 @@ def test_bundle_requires_unambiguous_input_and_refuses_changed_cached_snapshot(t
     with pytest.raises(ValueError, match="does not match"):
         materialize_import_bundle(database)
     assert cached.read_bytes() == b"different existing content"
+
+
+@pytest.mark.parametrize("resource", ["manifest", "chunk"])
+@pytest.mark.parametrize("failure, diagnostic", [
+    (FileNotFoundError, "file is missing"),
+    (PermissionError, "not readable by the current service account"),
+    (OSError, "could not be read"),
+])
+def test_private_file_read_errors_are_distinguishable_without_leaking_diagnostics(tmp_path, monkeypatch, resource, failure, diagnostic):
+    manifest = bundle_files(tmp_path / "secrets", b"snapshot")
+    monkeypatch.setenv("SWARMBOARD_IMPORT_BUNDLE_FILE", str(manifest))
+    failed_path = manifest if resource == "manifest" else manifest.parent / "swarmboard-import-000.b64"
+    original_open = Path.open
+
+    def fail_open(path, *args, **kwargs):
+        if path == failed_path:
+            raise failure("private content or filename must never be reported")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", fail_open)
+    with pytest.raises(ValueError, match=diagnostic) as error:
+        materialize_import_bundle(tmp_path / "data" / "swarmboard.db")
+    assert resource in str(error.value)
+    assert "private content" not in str(error.value)
+    assert str(failed_path) not in str(error.value)

@@ -110,8 +110,14 @@ def materialize_import_bundle(database: Path) -> Path | None:
                 or any(not isinstance(name, str) or not _BUNDLE_PART.fullmatch(name) for name in manifest["parts"])
                 or len(set(manifest["parts"])) != len(manifest["parts"])):
             raise ValueError
-    except (OSError, ValueError, TypeError, UnicodeError):
-        raise ValueError("Import bundle manifest is invalid or unreadable") from None
+    except FileNotFoundError:
+        raise ValueError("Import bundle manifest file is missing; check the Render secret-file mount") from None
+    except PermissionError:
+        raise ValueError("Import bundle manifest file is not readable by the current service account") from None
+    except OSError:
+        raise ValueError("Import bundle manifest file could not be read") from None
+    except (ValueError, TypeError, UnicodeError):
+        raise ValueError("Import bundle manifest contents are invalid") from None
 
     database = database.expanduser().resolve()
     incoming = database.parent / f"incoming-{manifest['sha256']}.db"
@@ -139,8 +145,14 @@ def materialize_import_bundle(database: Path) -> Path | None:
             chunks.append(chunk)
         encoded = b"".join(chunks)
         compressed = base64.b64decode(encoded.translate(None, b" \t\r\n\v\f"), validate=True)
-    except (OSError, ValueError, binascii.Error):
-        raise ValueError("Import bundle chunks are missing, unsafe, oversized, or invalid base64") from None
+    except FileNotFoundError:
+        raise ValueError("Import bundle chunk file is missing; check the Render secret-file mount") from None
+    except PermissionError:
+        raise ValueError("Import bundle chunk file is not readable by the current service account") from None
+    except OSError:
+        raise ValueError("Import bundle chunk file could not be read") from None
+    except (ValueError, binascii.Error):
+        raise ValueError("Import bundle chunks are unsafe, oversized, or invalid base64") from None
     # Drop encoded copies before expanding; only compressed bytes and a bounded
     # read buffer remain in memory while the raw SQLite snapshot goes to disk.
     del chunks, chunk, encoded

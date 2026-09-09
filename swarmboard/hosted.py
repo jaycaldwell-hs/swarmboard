@@ -53,7 +53,7 @@ def storage_lock(database: Path):
         except BlockingIOError:
             raise RuntimeError("Swarmboard already owns this database; run exactly one service instance and worker") from None
         try:
-            yield
+            yield stream
         finally:
             fcntl.flock(stream, fcntl.LOCK_UN)
 
@@ -114,6 +114,7 @@ def main() -> None:
 
     settings = Settings.from_env()
     database = Path(make_url(settings.database_url).database).resolve()
+    account = None
     # The image's writable mount can be owned by the host. Initialize its owner
     # before dropping privileges; inference and the web server run unprivileged.
     if os.getuid() == 0:
@@ -121,12 +122,20 @@ def main() -> None:
         account = pwd.getpwnam("swarmboard")
         database.parent.mkdir(parents=True, exist_ok=True)
         os.chown(database.parent, account.pw_uid, account.pw_gid)
-        os.setgroups([])
-        os.setgid(account.pw_gid)
-        os.setuid(account.pw_uid)
-    with storage_lock(database):
+    with storage_lock(database) as lock:
         from .migration import import_database, materialize_import_bundle
-        import_database(database, source=materialize_import_bundle(database))
+        # Render mounts secret files for the initial container user. Read the
+        # bounded, validated transfer before dropping privileges, then hand only
+        # the verified snapshot to the unprivileged database importer.
+        source = materialize_import_bundle(database)
+        if account is not None:
+            os.fchown(lock.fileno(), account.pw_uid, account.pw_gid)
+            if source is not None:
+                os.chown(source, account.pw_uid, account.pw_gid, follow_symlinks=False)
+            os.setgroups([])
+            os.setgid(account.pw_gid)
+            os.setuid(account.pw_uid)
+        import_database(database, source=source)
         backup_database(database)
         app = create_hosted_app(settings)
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")),
