@@ -23,7 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from . import sessions, autonomy, cadence
 from .auth import AuthSettings, BasicAuthMiddleware, human_handle, request_key
 from .config import DEFAULT_RUN_MAX_TOKENS, Settings
-from .credentials import redact, scrub_agent_settings, validate_hosted_provider
+from .credentials import redact, restore_persona_source, scrub_agent_settings, validate_hosted_provider
 from .context_views import agent_snapshot as capture_agent, participant_post, persona_identity
 from .database import init_db, make_engine, make_session_factory
 from .event_stream import EventBroker
@@ -543,6 +543,8 @@ def create_app(
         title="Swarmboard",
         version="0.1.0",
         description="Local, bounded, event-driven multi-agent discussion board",
+        docs_url=None,
+        redoc_url=None,
         lifespan=lifespan,
     )
     app.add_middleware(BasicAuthMiddleware, settings=auth_settings, audit=audit_human_action)
@@ -594,6 +596,18 @@ def create_app(
     @app.get("/sessions", response_class=HTMLResponse)
     async def session_page(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="sessions.html", context={})
+
+    @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
+    @app.get("/redoc", response_class=HTMLResponse, include_in_schema=False)
+    async def api_reference(request: Request) -> HTMLResponse:
+        methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+        operations = [
+            {"path": path, "method": method.upper(), "summary": operation.get("summary", ""),
+             "description": operation.get("description", "")}
+            for path, values in app.openapi().get("paths", {}).items()
+            for method, operation in values.items() if method in methods
+        ]
+        return templates.TemplateResponse(request=request, name="api_docs.html", context={"operations": operations})
 
     @app.get("/experiments", include_in_schema=False)
     async def legacy_experiment_page(request: Request) -> RedirectResponse:
@@ -818,7 +832,7 @@ def create_app(
         try:
             snapshot = load_persona(settings.persona_dir)
         except (OSError, ValueError) as exc:
-            raise InvalidStateError(f"Ada's persona files could not be loaded: {exc}") from exc
+            raise InvalidStateError("Ada's persona files could not be loaded; ask the board owner to check the server configuration.") from exc
         existing = find_ada(repo)
         if existing is None:
             return repo.create_agent(**persona_spec(snapshot, codex_model_source()).model_dump())
@@ -921,6 +935,8 @@ def create_app(
             before = _latest_event_id(session)
             agent = repo.get_agent(agent_id)
             previous_configuration = capture_agent(agent)
+            if "settings" in changes:
+                changes["settings"] = restore_persona_source(changes["settings"], agent.settings)
             try:
                 validate_hosted_provider(changes.get("provider", agent.provider), changes.get("settings", agent.settings))
             except ValueError as exc:

@@ -12,7 +12,7 @@ from swarmboard.app import create_app
 from swarmboard.gateways import AgentAction, ChatMessage, OpenAICompatibleGateway
 from swarmboard.harness import register_persona, start_discussion
 from swarmboard.models import Run, Stimulus, Turn
-from swarmboard.persona_context import ADA_BOARD_DELIVERY, HARNESS_PROMPT_VERSION, PersonaSnapshot, harness_prompt, load_persona
+from swarmboard.persona_context import ADA_BOARD_DELIVERY, HARNESS_PROMPT_VERSION, PersonaSnapshot, delivery_prompt_version, harness_prompt, load_persona
 
 from .test_engine_acceptance import ScriptedGateway, wait_until
 
@@ -35,8 +35,10 @@ def test_ada_delivery_rule_follows_unchanged_files_and_is_scoped_to_ada(tmp_path
 
     assert ada_prompt.count(ADA_BOARD_DELIVERY) == 1
     assert ada_prompt.index(ADA_BOARD_DELIVERY) > ada_prompt.rindex("</persona_file>")
-    assert "1–3 short sentences" in ADA_BOARD_DELIVERY
-    assert "This changes delivery, not the personality supplied by the files." in ADA_BOARD_DELIVERY
+    assert "social-media-brusque: concise, direct, dry, and casual." in ADA_BOARD_DELIVERY
+    assert "1–3 short sentences" not in ADA_BOARD_DELIVERY
+    assert "Keep your existing personality and priorities" in ADA_BOARD_DELIVERY
+    assert "without forced memes" not in ADA_BOARD_DELIVERY
     assert "Keep the required JSON format unchanged." in ADA_BOARD_DELIVERY
     assert ADA_BOARD_DELIVERY not in other_prompt
     for prompt in (ada_prompt, other_prompt):
@@ -65,7 +67,7 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
         assert next(peer for peer in context["participants"] if peer["handle"] == "ada") == {"handle": "ada"}
         assert context["persona_snapshot"]["sha256"] == snapshot.digest
         assert context["persona_snapshot"]["files"] == snapshot.file_manifest
-        assert context["persona_snapshot"]["prompt_version"] == HARNESS_PROMPT_VERSION
+        assert context["persona_snapshot"]["prompt_version"] == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada")
         return AgentAction(action="reply", body="@wintermute, what would you explore first?", intent="clarify")
 
     def peer_reply(agent, messages):
@@ -118,7 +120,7 @@ async def test_persona_and_peer_exchange_autonomously_with_captured_files(tmp_pa
                 assert len(turns) == 2
                 assert all(snapshot.memory in json.loads(turn.prompt)[0]["content"] for turn in turns)
                 assert all(ADA_BOARD_DELIVERY in json.loads(turn.prompt)[0]["content"] for turn in turns)
-                assert all(turn.prompt_version == HARNESS_PROMPT_VERSION for turn in turns)
+                assert all(turn.prompt_version == delivery_prompt_version(HARNESS_PROMPT_VERSION, handle="ada") for turn in turns)
             rerun = (await client.post(f"/api/runs/{run['id']}/rerun")).json()
             # Counterfactual reruns preserve participant selection too.
             with app.state.session_factory() as session:

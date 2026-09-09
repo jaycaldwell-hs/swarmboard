@@ -13,6 +13,8 @@ test exercise, not a guarantee against every possible attack.
 | Some retry/lineage responses and error paths lacked the shared redactor; validation errors echoed submitted inputs | Captured secrets could be returned in those fields; rejected submitted credentials could be echoed | Apply response redaction consistently and return validation type/location/message without input or exception context |
 | Credential field matching missed provider-prefixed names; free-text matching depended on current environment values | An accidentally saved literal key or recognizable old key could remain visible | Reject/scrub credential aliases and redact recognizable provider-key formats plus credential values inside JSON strings |
 | User sampling maps could replace request messages/model or supply tools/plugins | Request integrity and the no-new-tools boundary could be bypassed; no key exfiltration was demonstrated | Allow only generation settings and validate before credential resolution or network/process creation |
+| Captured persona source metadata and filesystem failures included server paths | A board login could reveal private directory names in state, traces, events, exports, or errors | Mask captured source directories as `server-managed` on output and use generic filesystem/reload errors; preserve original provenance when public settings are saved again |
+| Default API documentation loaded third-party JavaScript, fonts, and a favicon | External scripts ran in the authenticated board's origin | Serve a local API reference at `/docs` and `/redoc`, retain authenticated `/openapi.json`, and send `Referrer-Policy: no-referrer` |
 
 Codex argument validation and malformed provider-usage errors were also tightened.
 The fixed OpenRouter HTTPS destination/key binding, disabled redirects, restricted
@@ -27,7 +29,7 @@ tools. The UI's existing help button now reads **Help**.
 - Current server credentials were read through the owner's Render API solely for
   in-memory comparison. No values were printed, placed in this report, or sent in
   test inputs. Exact values and common encodings were absent from checked responses.
-- No known credential values or recognizable key candidates were found in 241
+- No known credential values or recognizable key candidates were found in 255
   file versions from all locally available Git refs. Private/env/database files
   are excluded from Git and container build inputs.
 - Authenticated secret-file/traversal requests returned 404. Anonymous attempts
@@ -35,11 +37,16 @@ tools. The UI's existing help button now reads **Help**.
 - Planted credentials in temporary test databases exercise traces, errors, retry
   responses, participant views, findings/interventions, SSE, legacy exports, JSONL,
   and ZIP members. Tests preserve the original stored artifacts and immutable events.
+- Persona provenance fixtures cover structured and nested JSON snapshots, alternate
+  JSON escapes, exports, global/per-session settings roundtrips, and reload failures.
+  Source masking never rewrites stored prompts, persona files, or audit events.
+- Frontend regressions check escaped post content and same-origin navigation/export
+  links. Both API reference pages use local CSS with no scripts or external assets.
 - The live board had no sessions during the initial scan, so populated history and
   export surfaces were checked using those isolated fixtures rather than creating
   production conversations or making billable model calls.
 
-The final local gate passed: **549 Python tests and 29 frontend tests**. Both page
+The final local gate passed: **578 Python tests and 32 frontend tests**. Page
 templates render, and `git diff --check` passes. Deployment is verified against the
 exact pushed commit, with a repeat authenticated credential scan and asset checks;
 the final live deployment result is reported separately in the delivery message.

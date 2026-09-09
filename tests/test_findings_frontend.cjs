@@ -92,6 +92,18 @@ test("findings panel offers all exports and switches prompt inclusion without ch
   assert.equal(b.tools.exportUrls("run/one", false).events, "/api/runs/run%2Fone/events.jsonl");
 });
 
+test("export identifiers stay in an encoded same-origin path", () => {
+  const b = browser();
+  const runId = '//observer.invalid/collect?token=private#fragment';
+  for (const href of Object.values(b.tools.exportUrls(runId))) {
+    const url = new URL(href, "https://board.test");
+    assert.equal(url.origin, "https://board.test");
+    assert.equal(url.hash, "");
+    assert.equal(url.searchParams.has("token"), false);
+    assert.equal(decodeURIComponent(url.pathname.split("/")[3]), runId);
+  }
+});
+
 test("Sessions flagged-only filter works in collaboration and keeps research resampling hidden", async () => {
   const elements = new Map();
   const element = id => {

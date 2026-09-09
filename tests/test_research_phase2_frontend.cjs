@@ -43,6 +43,22 @@ test("participant views select exact agent and historical post without unsafe UR
   assert.equal(new URLSearchParams(tools.participantViewUrl("t", "a").split("?")[1]).has("at_post_id"), false);
 });
 
+test("external-looking lineage identifiers cannot turn source navigation into offsite links", () => {
+  const tools = helper();
+  const external = '//observer.invalid/collect?token=private" onmouseover="alert(1)';
+  const run = {id: "fork", session_type: "research", lineage: {parent_thread_id: external, parent_post_id: external}};
+  const html = tools.navigationHtml(run, [run]);
+  const links = Array.from(html.matchAll(/href="([^"]+)"/g), match => match[1]);
+  assert.equal(links.length, 2);
+  for (const href of links) {
+    const url = new URL(href, "https://board.test");
+    assert.equal(url.origin, "https://board.test");
+    assert.equal(url.pathname, "/");
+    assert.equal(new URLSearchParams(url.hash.slice(1)).get("thread"), external);
+  }
+  assert.doesNotMatch(html, / onmouseover="/);
+});
+
 test("fork navigation nests descendants, collapses siblings around selection, and hides research", () => {
   const tools = helper();
   const runs = [

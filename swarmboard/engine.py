@@ -54,7 +54,7 @@ from .models import (
     utc_now,
 )
 from .personas import SYSTEM_PROMPT
-from .persona_context import HARNESS_PROMPT_VERSION, harness_prompt, persona_snapshot
+from .persona_context import HARNESS_PROMPT_VERSION, board_delivery, delivery_prompt_version, harness_prompt, persona_snapshot
 from .policies import ActionPolicy
 from .repository import ClaimConflictError, InvalidStateError, Repository
 from .scheduler import CandidateScore, SchedulingDecision, WeightedFairScheduler
@@ -1235,10 +1235,15 @@ class SwarmEngine:
             system_prompt = (
                 f"{SYSTEM_PROMPT}\n\n"
                 f"Your handle is @{agent.handle}. People on the board know you as the {agent.role}.\n"
-                f"Persona: {agent.persona}"
+                f"Persona: {agent.persona}" + board_delivery(agent.handle)
             )
         if autonomy.enabled(run):
             system_prompt = autonomy.prompt(agent, snapshot, run=run)
+        if agent.handle == "ada":
+            base_version = context.get("prompt_version") or context.get("persona_snapshot", {}).get("prompt_version", self.config.prompt_version)
+            context["prompt_version"] = delivery_prompt_version(base_version, handle=agent.handle)
+            if "persona_snapshot" in context:
+                context["persona_snapshot"]["prompt_version"] = context["prompt_version"]
         system = (
             f"{system_prompt}\n\n"
             "The exact JSON Schema is:\n"
@@ -2488,6 +2493,8 @@ class SwarmEngine:
 
     @staticmethod
     def _safe_error(error: BaseException) -> str:
+        if isinstance(error, OSError):
+            return f"{error.__class__.__name__}: server operation failed"
         return f"{error.__class__.__name__}: {str(error)[:2_000]}"
 
     @staticmethod

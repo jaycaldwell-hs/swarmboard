@@ -1,0 +1,32 @@
+:root {
+  color-scheme: light;
+  font: 16px/1.5 system-ui, sans-serif;
+  color: #252621;
+  background: #f5f2e9;
+}
+
+* { box-sizing: border-box; }
+body { max-width: 1120px; margin: 0 auto; padding: 28px 24px 60px; }
+nav { display: flex; gap: 20px; }
+a { color: #166258; text-underline-offset: 3px; }
+a:focus-visible, summary:focus-visible { outline: 2px solid #166258; outline-offset: 4px; }
+h1 { margin: 28px 0 10px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+header p { max-width: 700px; }
+h2 { margin-top: 32px; font-size: 20px; }
+h2 span { font-weight: 400; color: #66685f; }
+.route { margin: 8px 0; border: 1px solid #c8c9bd; border-radius: 8px; background: #fffef9; }
+.route summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; padding: 13px; cursor: pointer; }
+.route summary::after { content: "+"; margin-left: auto; }
+.route[open] summary::after { content: "−"; }
+.route code { overflow-wrap: anywhere; min-width: 0; font-size: 13px; }
+.route .summary { color: #66685f; font-size: 13px; }
+.route p { padding: 0 16px 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.method { min-width: 58px; font: 700 11px/1.5 ui-monospace, monospace; letter-spacing: .03em; color: #725b21; }
+.method-get { color: #166258; }
+.method-delete { color: #a2392f; }
+
+@media (max-width: 600px) {
+  body { padding: 20px 14px 40px; }
+  .route .summary { flex-basis: 100%; }
+  .route summary::after { display: none; }
+}

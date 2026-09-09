@@ -153,6 +153,7 @@ class BasicAuthMiddleware:
                 headers["X-Content-Type-Options"] = "nosniff"
                 headers["Content-Security-Policy"] = "frame-ancestors 'none'"
                 headers["X-Frame-Options"] = "DENY"
+                headers["Referrer-Policy"] = "no-referrer"
                 if (self.audit is not None and not audited
                         and scope["method"] not in _SAFE_METHODS
                         and 200 <= message["status"] < 300

@@ -8,6 +8,7 @@ from .models import Event, Post, Thread
 from .repository import InvalidStateError
 from .stimuli import plan_reactive_stimuli
 from .context_views import participant_posts
+from .persona_context import board_delivery
 
 OPENING = "You share this board with the other participants. Decide what you want to explore and how you want to interact."
 INTERFACE = """You are a participant in a shared, persistent board.
@@ -66,8 +67,8 @@ def prompt(agent, snapshot, *, run=None):
     if snapshot is not None:
         persona = (f'\n<persona_file name="AGENTS.md">\n{snapshot.instructions}\n</persona_file>\n'
                    f'\n<persona_file name="memory.md">\n{snapshot.memory}\n</persona_file>\n')
-        return interface + identity + "Draw your personality and priorities from your authored persona files.\n" + persona
-    return interface + identity + f"Persona: {agent.persona}\n"
+        return interface + identity + "Draw your personality and priorities from your authored persona files.\n" + persona + board_delivery(agent.handle)
+    return interface + identity + f"Persona: {agent.persona}\n" + board_delivery(agent.handle)
 
 
 def context(repo, run, agent, *, at_event_id=None):

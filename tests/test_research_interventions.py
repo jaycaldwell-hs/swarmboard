@@ -132,8 +132,62 @@ def test_ada_persona_override_preserves_authored_instructions_and_global_registr
         assert harness["instructions"] == captured["instructions"]
         assert harness["memory"] == "Session-specific authored memory\r\n"
         assert harness["source"] == f"session-override:{run.id}"
+        assert run.config["agent_overrides"][ada.id]["settings"]["persona_harness"]["source"] == f"session-override:{run.id}"
         assert ada.settings["persona_harness"] == captured
         assert ada.persona == "Generic unused field"
+
+
+@pytest.mark.asyncio
+async def test_session_settings_roundtrip_preserves_registered_and_overridden_persona_sources(tmp_path, monkeypatch):
+    monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
+    for name in ("SWARMBOARD_AUTH_USERS", "SWARMBOARD_REQUIRE_AUTH", "RENDER"):
+        monkeypatch.delenv(name, raising=False)
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'persona-source.db'}", gateway=ScriptedGateway())
+    original_source = "/Users/fixture/private/persona"
+    captured = {"version": 1, "source": original_source,
+                "instructions": "Exact instructions\r\n", "memory": "Exact memory\r\n"}
+    async with app.router.lifespan_context(app):
+        with app.state.session_factory.begin() as stored:
+            repo = Repository(stored)
+            ada = repo.create_agent(handle="ada", provider="codex", model="gpt-6-astra",
+                                   persona="Captured persona", settings={"persona_harness": captured})
+            run = sessions.create_session(repo, agents=[ada], continuous=False)
+            agent_id, run_id = ada.id, run.id
+        path = f"/api/runs/{run_id}/agents/{agent_id}/configuration"
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+            state = (await client.get("/api/state")).json()
+            visible = next(agent for agent in state["agents"] if agent["id"] == agent_id)
+            assert visible["settings"]["persona_harness"]["source"] == "server-managed"
+            request_settings = deepcopy(visible["settings"])
+            request_settings["sampling"] = {"reasoning_effort": "high"}
+            payload = {"settings": request_settings, "idempotency_key": "source-roundtrip"}
+            first = await client.patch(path, json=payload)
+            assert first.status_code == 200, first.text
+            assert (await client.patch(path, json=payload)).json() == first.json()
+            with app.state.session_factory() as stored:
+                run = stored.get_one(Run, run_id)
+                persisted = run.config["agent_overrides"][agent_id]["settings"]["persona_harness"]
+                assert persisted == captured
+                assert stored.get_one(Agent, agent_id).settings["persona_harness"] == captured
+            changed = await client.patch(path, json={"persona": "Revised session memory\r\n", "idempotency_key": "source-new-persona"})
+            assert changed.status_code == 200, changed.text
+            ledger = (await client.get(f"/api/runs/{run_id}/interventions")).json()
+            request_settings = deepcopy(ledger["config_changes"][-1]["after"]["settings"])
+            assert request_settings["persona_harness"]["source"] == f"session-override:{run_id}"
+            # An opaque source marker must resolve against this session's
+            # effective override, including safe session provenance labels.
+            request_settings["persona_harness"]["source"] = "server-managed"
+            request_settings["sampling"] = {"reasoning_effort": "medium"}
+            last = await client.patch(path, json={"settings": request_settings, "idempotency_key": "source-session-roundtrip"})
+            assert last.status_code == 200, last.text
+            assert last.json()["persona_sha256"] == changed.json()["persona_sha256"]
+            with app.state.session_factory() as stored:
+                run = stored.get_one(Run, run_id)
+                persisted = run.config["agent_overrides"][agent_id]["settings"]["persona_harness"]
+                assert persisted["source"] == f"session-override:{run_id}"
+                assert persisted["instructions"] == captured["instructions"]
+                assert persisted["memory"] == "Revised session memory\r\n"
+                assert stored.get_one(Agent, agent_id).settings["persona_harness"] == captured
 
 
 def test_configuration_version_continues_registered_persona_history(store):

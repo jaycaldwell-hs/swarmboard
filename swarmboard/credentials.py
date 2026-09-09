@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import json
+from copy import deepcopy
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlsplit
@@ -29,6 +30,7 @@ _PROVIDER_KEY_RE = re.compile(
     r"(?![A-Za-z0-9_-])"
 )
 _JSON_STRING_FIELD_RE = re.compile(r'("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")')
+PUBLIC_PERSONA_SOURCE = "server-managed"
 _SAMPLING_FIELDS = frozenset({
     "temperature", "top_p", "top_k", "min_p", "top_a", "typical_p",
     "frequency_penalty", "presence_penalty", "repetition_penalty",
@@ -44,6 +46,7 @@ def redact(value: Any) -> Any:
     Storage retains the original model artifact. Exports/HTTP responses may
     contain a redacted representation, including secrets embedded in free text.
     Environment-variable *names* remain useful and are never treated as secrets.
+    Persona source directories are private provenance, also hidden on output.
     """
     secrets: set[str] = set()
     for name, secret in os.environ.items():
@@ -62,6 +65,9 @@ def redact(value: Any) -> Any:
 
     def clean(item):
         if isinstance(item, str):
+            # Captures can nest serialized snapshots inside prompts/events.
+            # Decode before masking so alternate JSON escapes cannot hide paths.
+            item = _mask_persona_sources(item)
             for secret in ordered:
                 item = item.replace(secret, "[REDACTED]")
                 for escaped in {json.dumps(secret, ensure_ascii=ascii_only)[1:-1] for ascii_only in (False, True)}:
@@ -80,13 +86,57 @@ def redact(value: Any) -> Any:
             result = {}
             for key, content in item.items():
                 sensitive = _credential_field(key) is not None
-                result[clean(str(key))] = "[REDACTED]" if sensitive and content is not None else clean(content)
+                if key == "source" and _private_persona_source(item):
+                    result[key] = PUBLIC_PERSONA_SOURCE
+                else:
+                    result[clean(str(key))] = "[REDACTED]" if sensitive and content is not None else clean(content)
             return result
         if isinstance(item, (list, tuple)):
             return [clean(child) for child in item]
         return item
 
     return clean(value)
+
+
+def _private_persona_source(value: Mapping) -> str | None:
+    source = value.get("source")
+    if (value.get("version") == 1 and isinstance(value.get("instructions"), str)
+            and isinstance(value.get("memory"), str) and isinstance(source, str)
+            and source != PUBLIC_PERSONA_SOURCE
+            and re.fullmatch(r"session-override:[A-Za-z0-9_-]+", source) is None):
+        return source
+    return None
+
+
+def _mask_persona_sources(value: Any) -> Any:
+    if isinstance(value, str):
+        if not value.lstrip().startswith(("{", "[", '"')):
+            return value
+        try:
+            parsed = json.loads(value)
+        except (ValueError, RecursionError):
+            return value
+        masked = _mask_persona_sources(parsed)
+        # Keep unaffected raw text byte-for-byte. A changed public representation
+        # may use canonical JSON spacing; the stored artifact is never rewritten.
+        return json.dumps(masked, ensure_ascii=False) if masked != parsed else value
+    if isinstance(value, Mapping):
+        return {key: PUBLIC_PERSONA_SOURCE if key == "source" and _private_persona_source(value)
+                else _mask_persona_sources(content) for key, content in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_mask_persona_sources(content) for content in value]
+    return value
+
+
+def restore_persona_source(settings: Mapping, prior_settings: Mapping) -> dict:
+    """Keep private provenance when a collaborator saves public settings again."""
+    result = deepcopy(dict(settings))
+    snapshot = result.get("persona_harness")
+    previous = prior_settings.get("persona_harness")
+    if (isinstance(snapshot, dict) and snapshot.get("source") == PUBLIC_PERSONA_SOURCE
+            and isinstance(previous, Mapping) and isinstance(previous.get("source"), str)):
+        snapshot["source"] = previous["source"]
+    return result
 
 
 def _credential_field(name: object) -> str | None:
@@ -231,4 +281,4 @@ def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) 
         raise ValueError("credential environment name is outside SWARMBOARD_ALLOWED_CREDENTIAL_ENV_VARS")
 
 
-__all__ = ["redact", "scrub_agent_settings", "validate_agent_settings", "validate_hosted_provider", "validate_sampling"]
+__all__ = ["redact", "restore_persona_source", "scrub_agent_settings", "validate_agent_settings", "validate_hosted_provider", "validate_sampling"]

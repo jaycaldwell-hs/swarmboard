@@ -12,6 +12,7 @@ import pytest
 from swarmboard.config import Settings
 from swarmboard.gateways import GatewayError
 from swarmboard.hosted import backup_database, create_hosted_app, prepare_persona, storage_lock
+from swarmboard.models import Agent
 
 from .test_engine_acceptance import ScriptedGateway
 
@@ -97,7 +98,7 @@ async def test_hosted_startup_registers_ada_and_preserves_edits_across_restarts(
             snapshot = ada["settings"]["persona_harness"]
             assert snapshot["instructions"] == files["AGENTS.md"]
             assert snapshot["memory"] == files["memory.md"]
-            assert snapshot["source"] == str(settings.persona_dir)
+            assert snapshot["source"] == "server-managed"
             assert "test-api-key-no-network" not in json.dumps(state)
 
             edited_settings = copy.deepcopy(ada["settings"])
@@ -108,6 +109,11 @@ async def test_hosted_startup_registers_ada_and_preserves_edits_across_restarts(
                 "persona": "A deliberately edited participant description.",
             })
             assert edited.status_code == 200, edited.text
+            with app.state.session_factory() as stored:
+                internal = stored.get_one(Agent, ada["id"]).settings["persona_harness"]
+                assert internal["source"] == str(settings.persona_dir)
+                assert internal["instructions"] == edited_settings["persona_harness"]["instructions"]
+                assert internal["memory"] == edited_settings["persona_harness"]["memory"]
             created = await client.post("/api/sessions", json={
                 "agent_ids": [ada["id"]], "continuous": False,
                 "title": "Persist this session", "body": "Durable opening",
@@ -136,6 +142,8 @@ async def test_hosted_startup_registers_ada_and_preserves_edits_across_restarts(
             assert persisted["settings"] == edited_settings
             assert persisted["cooldown_seconds"] == 17
             assert persisted["persona"] == "A deliberately edited participant description."
+            with restarted.state.session_factory() as stored:
+                assert stored.get_one(Agent, ada["id"]).settings["persona_harness"]["source"] == str(settings.persona_dir)
             exported = await client.get(f"/api/sessions/{session['run_id']}/export")
             assert exported.status_code == 200
             posts = exported.json()["posts"]

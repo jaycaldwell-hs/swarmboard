@@ -14,6 +14,7 @@ from swarmboard.engine import EngineConfig, SwarmEngine
 from swarmboard.gateways import AgentAction, GatewayError
 from swarmboard.models import Agent, Event, Post, Run, Stimulus, Thread, Turn, utc_now
 from swarmboard.repository import Repository
+from swarmboard.persona_context import delivery_prompt_version
 from .test_engine_acceptance import ScriptedGateway, BlockingGateway, make_database
 
 
@@ -68,7 +69,8 @@ async def test_peer_ada_rotation_receives_full_transcript_across_threads_and_con
     assert seen == ['peer1','ada','peer2','ada','peer3','ada']*2
     with factory() as session:
         turns = list(session.scalars(select(Turn).where(Turn.run_id==rid).order_by(Turn.started_at,Turn.id)))
-        assert all(t.prompt_version=='ada-cadence-v1' and len(t.context_post_ids)>=46 for t in turns)
+        assert all(t.prompt_version == delivery_prompt_version('ada-cadence-v1', handle='ada' if t.agent_id == ada else 'peer')
+                   and len(t.context_post_ids)>=46 for t in turns)
         assert turns[1].thread_id == session.get(Post, turns[0].resulting_post_id).thread_id
         assert not list(session.scalars(select(Stimulus).where(Stimulus.run_id==rid, Stimulus.kind=='mention')))
         report = sessions.activity(Repository(session), rid)

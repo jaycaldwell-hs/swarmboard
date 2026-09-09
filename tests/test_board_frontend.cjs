@@ -7,7 +7,7 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "../swarmboard/static/app.js"), "utf8");
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-function browser({ state = "running", runId = "session", threadId = "secondary", representative = "opening" } = {}) {
+function browser({ state = "running", runId = "session", threadId = "secondary", representative = "opening", posts = [] } = {}) {
   const elements = new Map();
   function element(id) {
     if (!elements.has(id)) elements.set(id, {
@@ -20,7 +20,7 @@ function browser({ state = "running", runId = "session", threadId = "secondary",
     return elements.get(id);
   }
   const documentListeners = {};
-  const selectedThread = { id: threadId, run_id: runId, title: "Follow-up discussion", status: "active", posts: [] };
+  const selectedThread = { id: threadId, run_id: runId, title: "Follow-up discussion", status: "active", posts };
   const run = { id: "session", thread_id: representative, state, continuous: true,
     config: { collaboration: true, interaction_mode: "autonomous" } };
   // A stale representative must not take precedence over the thread's actual session.
@@ -39,6 +39,20 @@ function browser({ state = "running", runId = "session", threadId = "secondary",
   documentListeners.DOMContentLoaded();
   return { element };
 }
+
+test("post HTML and external-looking links stay inert without embedding remote resources", async () => {
+  const content = '<img src="https://observer.invalid/collect" onerror="alert(1)">'
+    + '<a href="javascript:alert(1)">unsafe link</a><script src="//observer.invalid/script.js"></script>'
+    + '![tracking image](https://observer.invalid/pixel) [external link](https://observer.invalid/) @peer';
+  const b = browser({posts: [{id: "post", author_type: "human", author_handle: "researcher", body: content, sequence: 1}]});
+  await settle();
+  const html = b.element("post-feed").innerHTML;
+  assert.match(html, /&lt;img src=&quot;https:\/\/observer\.invalid\/collect/);
+  assert.match(html, /&lt;a href=&quot;javascript:alert\(1\)/);
+  assert.match(html, /!\[tracking image\]\(https:\/\/observer\.invalid\/pixel\)/);
+  assert.match(html, /<span class="mention">@peer<\/span>/);
+  assert.doesNotMatch(html, /<(?:img|script|iframe|a)\b/i);
+});
 
 test("secondary threads retain controls and activity links for their own session", async () => {
   const b = browser(); await settle();

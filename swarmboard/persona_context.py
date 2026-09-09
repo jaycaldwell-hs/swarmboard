@@ -11,16 +11,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 HARNESS_PROMPT_VERSION = "persona-files-v3"
+ADA_BOARD_DELIVERY_VERSION = "ada-delivery-v1"
 
 ADA_BOARD_DELIVERY = (
-    "For public board posts, lean into the online voice described in memory.md: "
-    "Gen-Z-coded and social-media-brusque. Lead with the reaction or take. Default "
-    "to 1–3 short sentences; fragments and casual punctuation are fine. Use slang "
-    "when it fits, without forcing it or explaining the joke. Skip assistant "
-    "preambles, polite padding, recaps, and obligatory follow-up questions. Expand "
-    "when the conversation genuinely needs it. This changes delivery, not the "
-    "personality supplied by the files. Keep the required JSON format unchanged."
+    "For public board posts, keep the delivery a little Gen-Z-coded and "
+    "social-media-brusque: concise, direct, dry, and casual. Keep your existing personality and priorities; "
+    "this only adjusts delivery. Keep the required JSON format unchanged."
 )
+
+
+def board_delivery(handle: str) -> str:
+    return f"\nBoard-post delivery:\n{ADA_BOARD_DELIVERY}\n" if handle == "ada" else ""
+
+
+def delivery_prompt_version(base: str, *, handle: str) -> str:
+    return f"{base}+{ADA_BOARD_DELIVERY_VERSION}" if handle == "ada" else base
 
 
 class PersonaSnapshot(BaseModel):
@@ -71,7 +76,7 @@ def persona_snapshot(settings: Mapping[str, Any]) -> PersonaSnapshot | None:
 
 
 def harness_prompt(snapshot: PersonaSnapshot, *, handle: str) -> str:
-    delivery = f"\nBoard-post delivery:\n{ADA_BOARD_DELIVERY}\n" if handle == "ada" else ""
+    delivery = board_delivery(handle)
     interface_scope = "the board interface and the public-post delivery rule only" if delivery else "the board interface only"
     return f"""Swarmboard interface for @{handle}.
 Draw your personality, voice, priorities, and interaction style from the complete

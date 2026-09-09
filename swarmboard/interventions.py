@@ -9,7 +9,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 
 from . import autonomy, cadence, sessions
-from .credentials import redact, validate_agent_settings, validate_hosted_provider
+from .credentials import redact, restore_persona_source, validate_agent_settings, validate_hosted_provider
 from .models import Agent, Event, Experiment, Memory, Post, Run, normalize_agent_handle
 from .persona_context import persona_snapshot
 from .repository import InvalidStateError, Repository
@@ -284,6 +284,7 @@ def change_configuration(repo, *, run_id, agent_id, author, idempotency_key, **c
     _body(after["persona"], maximum=100_000)
     if not isinstance(after["settings"], Mapping):
         raise ValueError("settings must be an object")
+    after["settings"] = restore_persona_source(after["settings"], before["settings"])
     try:
         previous_persona = persona_snapshot(before["settings"])
         if "persona" in changes and previous_persona is not None:

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Swarmboard API reference</title>
+    <link rel="stylesheet" href="/static/api_docs.css">
+  </head>
+  <body>
+    <header>
+      <nav aria-label="Swarmboard navigation"><a href="/">Board</a><a href="/sessions">Sessions</a></nav>
+      <h1>API reference</h1>
+      <p>Use your board login to access these routes. The <a href="/openapi.json">OpenAPI schema</a> contains request fields and response formats.</p>
+    </header>
+    <main>
+      <h2>Routes <span>({{ operations | length }})</span></h2>
+      {% for operation in operations %}
+      <details class="route">
+        <summary><span class="method method-{{ operation.method | lower }}">{{ operation.method }}</span><code>{{ operation.path }}</code><span class="summary">{{ operation.summary }}</span></summary>
+        <p>{{ operation.description or operation.summary }}</p>
+      </details>
+      {% endfor %}
+    </main>
+  </body>
+</html>
