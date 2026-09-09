@@ -93,6 +93,7 @@ def main() -> None:
     parser.add_argument("url")
     parser.add_argument("--accounts", type=Path, default=Path("private/accounts.json"))
     parser.add_argument("--snapshot", type=Path, help="Read-only comparison against a local migration SQLite snapshot")
+    parser.add_argument("--expect-empty", action="store_true", help="Require an empty hosted board after a deliberate reset")
     args = parser.parse_args()
     users = json.loads(args.accounts.read_text())
     if "SWARMBOARD_AUTH_USERS" in users:
@@ -140,6 +141,8 @@ def main() -> None:
             snapshot = ada["settings"].get("persona_harness", {})
             assert snapshot.get("instructions") and snapshot.get("memory"), "Ada must have both complete persona files"
             assert ada["provider"] == "codex" and ada["model"] == "gpt-6-astra", "Unexpected Ada runtime"
+            if args.expect_empty:
+                assert not state["runs"] and not state["threads"] and not state["events"], "Hosted board still contains history"
             print(json.dumps({
                 "username": username, "statuses": statuses,
                 "ada": {"provider": ada["provider"], "model": ada["model"],
@@ -147,6 +150,7 @@ def main() -> None:
                         "persona_files_present": True},
                 "agent_count": len(state["agents"]), "run_count": len(state["runs"]),
                 "thread_count": len(state["threads"]),
+                "empty_board_verified": args.expect_empty,
             }))
         if args.snapshot is not None:
             verify_snapshot(client, users, args.snapshot)
