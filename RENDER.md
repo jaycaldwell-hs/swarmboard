@@ -104,6 +104,22 @@ environment variable after a successful import. Keep the source and `.imports`
 receipts for recovery/audit. A different uploaded file deliberately starts a new
 replacing import, so use this only for migration or recovery.
 
+The deployment helper can transfer a snapshot through Render's private secret
+files without SSH. Keep `RENDER_API_KEY` in the ignored local `.env`, and use the
+deployment state saved by `scripts/render_admin.py create`:
+
+```sh
+.venv/bin/python scripts/render_admin.py stage-import --snapshot private/swarmboard-migration.db
+.venv/bin/python scripts/render_admin.py deploy
+```
+
+It uploads bounded base64 chunks of a compressed snapshot and a SHA-256 manifest,
+then sets `SWARMBOARD_IMPORT_BUNDLE_FILE` for the next deployment. Startup checks
+the exact size and digest before the journaled import. Configure only one import
+method at a time. After verifying the imported history, run `clear-import` and
+redeploy to remove the import flag; the private uploaded files, source snapshot,
+backups and receipts remain available for recovery.
+
 ## Verification
 
 ```sh

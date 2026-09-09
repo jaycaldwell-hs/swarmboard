@@ -7,18 +7,28 @@ never a live database or a main database file copied without its WAL.
 from __future__ import annotations
 
 from contextlib import closing
+import base64
+import binascii
+import gzip
 import hashlib
+import io
 import json
+import lzma
 import os
 from pathlib import Path
 import re
 import sqlite3
 import tempfile
 from typing import Any, Literal
+import zlib
 
 
 _CORE_TABLES = {"agents", "runs", "threads", "posts", "events", "turns"}
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_BUNDLE_PART = re.compile(r"swarmboard-import-[0-9]{3}\.b64\Z")
+_MAX_ENCODED_BUNDLE = 32 * 1024 * 1024
+_MAX_RAW_BUNDLE = 128 * 1024 * 1024
+_MAX_XZ_MEMORY = 64 * 1024 * 1024
 
 
 def _digest(path: Path) -> str:
@@ -37,6 +47,127 @@ def _sync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _bundle_blocks(compressed: bytes, compression: str, size_limit: int):
+    """Yield bounded output blocks; XZ dictionary memory has a separate cap."""
+    produced = 0
+    if compression == "gzip":
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as source:
+            while block := source.read(min(64 * 1024, size_limit - produced + 1)):
+                produced += len(block)
+                if produced > size_limit:
+                    raise ValueError("Import bundle expands beyond its declared size")
+                yield block
+        return
+    decoder = lzma.LZMADecompressor(format=lzma.FORMAT_XZ, memlimit=_MAX_XZ_MEMORY)
+    offset = 0
+    while not decoder.eof:
+        chunk = b""
+        if decoder.needs_input:
+            if offset == len(compressed):
+                raise ValueError("Truncated XZ import bundle")
+            chunk = compressed[offset:offset + 64 * 1024]
+            offset += len(chunk)
+        block = decoder.decompress(chunk, max_length=min(64 * 1024, size_limit - produced + 1))
+        produced += len(block)
+        if produced > size_limit:
+            raise ValueError("Import bundle expands beyond its declared size")
+        if block:
+            yield block
+    if decoder.unused_data or offset != len(compressed):
+        raise ValueError("XZ import bundle must contain exactly one compressed stream")
+
+
+def materialize_import_bundle(database: Path) -> Path | None:
+    """Expand private Render secret-file chunks into a verified import snapshot.
+
+    The manifest names base64 chunks of one gzip or XZ stream. Call under the storage
+    lock before ``import_database(database, source=materialize_import_bundle(...))``.
+    No live database is replaced here; only the SHA-addressed incoming snapshot.
+    """
+    configured = os.getenv("SWARMBOARD_IMPORT_BUNDLE_FILE", "").strip()
+    if not configured:
+        return None
+    if os.getenv("SWARMBOARD_IMPORT_DB_PATH", "").strip():
+        raise ValueError("Configure only one of SWARMBOARD_IMPORT_BUNDLE_FILE and SWARMBOARD_IMPORT_DB_PATH")
+    manifest_path = Path(configured).expanduser()
+    try:
+        with manifest_path.open("rb") as stream:
+            raw_manifest = stream.read(64 * 1024 + 1)
+        if len(raw_manifest) > 64 * 1024:
+            raise ValueError
+        manifest = json.loads(raw_manifest)
+        if (not isinstance(manifest, dict)
+                or set(manifest) not in ({"version", "sha256", "size_bytes", "parts"},
+                                         {"version", "sha256", "size_bytes", "parts", "compression"})
+                or manifest.get("compression", "gzip") not in {"gzip", "xz"}
+                or type(manifest["version"]) is not int or manifest["version"] != 1
+                or not isinstance(manifest["sha256"], str) or not _SHA256.fullmatch(manifest["sha256"])
+                or type(manifest["size_bytes"]) is not int
+                or not 0 < manifest["size_bytes"] <= _MAX_RAW_BUNDLE
+                or not isinstance(manifest["parts"], list) or not 1 <= len(manifest["parts"]) <= 128
+                or any(not isinstance(name, str) or not _BUNDLE_PART.fullmatch(name) for name in manifest["parts"])
+                or len(set(manifest["parts"])) != len(manifest["parts"])):
+            raise ValueError
+    except (OSError, ValueError, TypeError, UnicodeError):
+        raise ValueError("Import bundle manifest is invalid or unreadable") from None
+
+    database = database.expanduser().resolve()
+    incoming = database.parent / f"incoming-{manifest['sha256']}.db"
+    if incoming == database or incoming.is_symlink():
+        raise ValueError("Import bundle destination must be a separate regular snapshot file")
+    if incoming.exists():
+        if (not incoming.is_file() or incoming.stat().st_size != manifest["size_bytes"]
+                or _digest(incoming) != manifest["sha256"]):
+            raise ValueError("Existing import bundle snapshot does not match its manifest")
+        return incoming
+
+    directory = manifest_path.parent.resolve()
+    chunks = []
+    encoded_size = 0
+    try:
+        for name in manifest["parts"]:
+            part = directory / name
+            if not part.resolve().is_relative_to(directory):
+                raise ValueError
+            with part.open("rb") as stream:
+                chunk = stream.read(_MAX_ENCODED_BUNDLE - encoded_size + 1)
+            encoded_size += len(chunk)
+            if encoded_size > _MAX_ENCODED_BUNDLE:
+                raise ValueError
+            chunks.append(chunk)
+        encoded = b"".join(chunks)
+        compressed = base64.b64decode(encoded.translate(None, b" \t\r\n\v\f"), validate=True)
+    except (OSError, ValueError, binascii.Error):
+        raise ValueError("Import bundle chunks are missing, unsafe, oversized, or invalid base64") from None
+    # Drop encoded copies before expanding; only compressed bytes and a bounded
+    # read buffer remain in memory while the raw SQLite snapshot goes to disk.
+    del chunks, chunk, encoded
+    database.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".incoming-bundle-", suffix=".db", dir=database.parent)
+    temporary_path = Path(temporary)
+    try:
+        actual_digest = hashlib.sha256()
+        actual_size = 0
+        with os.fdopen(descriptor, "wb") as destination:
+            for block in _bundle_blocks(compressed, manifest.get("compression", "gzip"), manifest["size_bytes"]):
+                actual_size += len(block)
+                if actual_size > manifest["size_bytes"]:
+                    raise ValueError("Import bundle expands beyond its declared size")
+                actual_digest.update(block)
+                destination.write(block)
+            if actual_size != manifest["size_bytes"] or actual_digest.hexdigest() != manifest["sha256"]:
+                raise ValueError("Import bundle failed size or SHA-256 validation")
+            destination.flush()
+            os.fsync(destination.fileno())
+        os.replace(temporary_path, incoming)
+        _sync_directory(database.parent)
+        return incoming
+    except (OSError, EOFError, ValueError, zlib.error, lzma.LZMAError):
+        raise ValueError("Import bundle is corrupt or does not match its declared size and SHA-256") from None
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _write_receipt(path: Path, receipt: dict[str, Any]) -> None:

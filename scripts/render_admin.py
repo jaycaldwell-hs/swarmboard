@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
+import lzma
 import os
 from pathlib import Path
+import re
 
 import httpx
 from dotenv import dotenv_values
@@ -14,9 +18,10 @@ STATE = Path("private/render-deployment.json")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "validate", "create", "status", "logs", "deploy"])
+    parser.add_argument("action", choices=["inspect", "validate", "create", "status", "logs", "deploy", "stage-import", "clear-import"])
     parser.add_argument("--owner")
     parser.add_argument("--commit")
+    parser.add_argument("--snapshot", type=Path, default=Path("private/swarmboard-migration.db"))
     args = parser.parse_args()
     local = {**dotenv_values(".env"), **os.environ}
     token = local.get("RENDER_API_KEY")
@@ -36,10 +41,11 @@ def main() -> None:
 
     with httpx.Client(base_url="https://api.render.com/v1", timeout=60,
                       headers={"Authorization": f"Bearer {token}", "Accept": "application/json"}) as client:
-        def request(method, path, **kwargs):
+        def request(method, path, *, private=False, **kwargs):
             response = client.request(method, path, **kwargs)
             if not response.is_success:
-                safe({"ok": False, "status": response.status_code, "detail": response.text[:2000]})
+                safe({"ok": False, "status": response.status_code,
+                      "detail": "Private request failed; response omitted" if private else response.text[:2000]})
                 raise SystemExit(1)
             return response.json() if response.content else {}
 
@@ -90,7 +96,55 @@ def main() -> None:
                 safe({"deploys": [{k: item.get("deploy", item).get(k) for k in ("id", "status", "commit", "createdAt", "finishedAt")} for item in deploys]})
             elif args.action == "logs":
                 result = request("GET", "/logs", params={"ownerId": state["owner_id"], "resource": service_id, "limit": 100, "direction": "backward"})
-                safe(result)
+                logs = result.get("logs", [])
+                safe({"logs": [{"timestamp": item.get("timestamp"), "message": item.get("message", "")[:1500]}
+                               for item in logs[-40:]]})
+            elif args.action == "stage-import":
+                # Snapshot must come from SQLite's online backup API, never a
+                # copy of a live main file with an uncheckpointed WAL.
+                from swarmboard.migration import _MAX_ENCODED_BUNDLE, _MAX_RAW_BUNDLE, _CORE_TABLES
+                import sqlite3
+                from contextlib import closing
+                source = args.snapshot.resolve()
+                if not source.is_file() or not 0 < source.stat().st_size <= _MAX_RAW_BUNDLE:
+                    parser.error("Snapshot is missing or exceeds the import limit")
+                if any(Path(str(source) + suffix).exists() and Path(str(source) + suffix).stat().st_size
+                       for suffix in ("-wal", "-journal")):
+                    parser.error("Create a standalone SQLite backup before staging")
+                with closing(sqlite3.connect(source.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+                    if db.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                        parser.error("Snapshot failed integrity validation")
+                    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    if not _CORE_TABLES.issubset(tables):
+                        parser.error("Snapshot is not a Swarmboard database")
+                raw = source.read_bytes()
+                encoded = base64.b64encode(lzma.compress(raw, preset=6)).decode("ascii")
+                if len(encoded) > _MAX_ENCODED_BUNDLE:
+                    parser.error("Compressed snapshot exceeds the import limit")
+                # Replace only this helper's previous temporary upload parts.
+                existing = request("GET", f"/services/{service_id}/secret-files", private=True, params={"limit": 100})
+                for item in existing:
+                    name = item["secretFile"]["name"]
+                    if re.fullmatch(r"swarmboard-import-(?:[0-9]{3}\.b64)", name) or name == "swarmboard-import.json":
+                        request("DELETE", f"/services/{service_id}/secret-files/{name}", private=True)
+                parts = []
+                chunk_size = 256 * 1024
+                for index, offset in enumerate(range(0, len(encoded), chunk_size)):
+                    name = f"swarmboard-import-{index:03d}.b64"
+                    request("PUT", f"/services/{service_id}/secret-files/{name}", private=True,
+                            json={"content": encoded[offset:offset + chunk_size]})
+                    parts.append(name)
+                    safe({"uploaded_part": index + 1})
+                manifest = {"version": 1, "compression": "xz", "sha256": hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw), "parts": parts}
+                request("PUT", f"/services/{service_id}/secret-files/swarmboard-import.json", private=True,
+                        json={"content": json.dumps(manifest)})
+                request("PUT", f"/services/{service_id}/env-vars/SWARMBOARD_IMPORT_BUNDLE_FILE", private=True,
+                        json={"value": "/etc/secrets/swarmboard-import.json"})
+                safe({"staged": True, "size_bytes": len(raw), "sha256": manifest["sha256"], "parts": len(parts),
+                      "next": "Deploy the import-capable commit to apply this snapshot once"})
+            elif args.action == "clear-import":
+                request("DELETE", f"/services/{service_id}/env-vars/SWARMBOARD_IMPORT_BUNDLE_FILE", private=True)
+                safe({"import_disabled": True, "next": "Redeploy to apply; imported history and backups remain on disk"})
             elif args.action == "deploy":
                 body = {"clearCache": "do_not_clear"}
                 if args.commit:

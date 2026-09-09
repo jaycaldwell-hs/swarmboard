@@ -125,8 +125,8 @@ def main() -> None:
         os.setgid(account.pw_gid)
         os.setuid(account.pw_uid)
     with storage_lock(database):
-        from .migration import import_database
-        import_database(database)
+        from .migration import import_database, materialize_import_bundle
+        import_database(database, source=materialize_import_bundle(database))
         backup_database(database)
         app = create_hosted_app(settings)
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")),
