@@ -128,6 +128,25 @@ docker build -t swarmboard:test .
 python3 scripts/container_smoke.py
 ```
 
+For a running service, verify access and optionally compare migrated history:
+
+```sh
+.venv/bin/python scripts/live_smoke.py https://YOUR-SERVICE.onrender.com --snapshot private/swarmboard-migration.db
+```
+
+`scripts/live_runtime_smoke.py URL` creates one clearly labeled Ada test session
+and makes one billable model turn. It checks API authentication, the Codex version,
+raw persona inclusion and both human authors in the export. Use
+`--verify-existing` to recheck its saved session after a restart without another
+model call.
+
+The API helper creates services from the public repository URL. Those services
+require `scripts/render_admin.py deploy` after a push. To enable automatic deploys,
+connect GitHub under Render's **Account Settings → Git Deployment Credentials**
+and link the service to the connected repository. The Blueprint's commit trigger
+applies when the repository is connected through Render's Git integration.
+See [Render's deployment rules](https://render.com/docs/deploys).
+
 The Docker build runs the Python/frontend tests in a separate verification stage
 before producing the service image. Failed tests block deployment. An optional
 GitHub Actions workflow is in `ci/github-actions.yml`; install it under
