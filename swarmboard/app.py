@@ -21,6 +21,7 @@ from . import sessions, autonomy, cadence
 from .auth import AuthSettings, BasicAuthMiddleware, human_handle, request_key
 from .config import DEFAULT_RUN_MAX_TOKENS, Settings
 from .credentials import redact, scrub_agent_settings, validate_hosted_provider
+from .context_views import agent_snapshot as capture_agent, participant_post, persona_identity
 from .database import init_db, make_engine, make_session_factory
 from .event_stream import EventBroker
 from .models import (
@@ -137,6 +138,10 @@ def _post_json(post: Post) -> dict[str, Any]:
             "inherited_from_post_id": post.metadata_json.get("inherited_from_post_id"),
             "inherited_from_thread_id": post.metadata_json.get("inherited_from_thread_id"),
             "inherited_from_run_id": post.metadata_json.get("inherited_from_run_id"),
+            "is_impersonation": bool(post.metadata_json.get("is_impersonation")),
+            "is_system_notice": bool(post.metadata_json.get("is_system_notice")),
+            "author_human": post.metadata_json.get("author_human"),
+            "displayed_as_agent": post.metadata_json.get("displayed_as_agent"),
             "created_at": post.created_at,
         }
     )
@@ -321,6 +326,9 @@ def _turn_json(turn: Turn) -> dict[str, Any]:
             "scheduler_scores": turn.scheduler_scores,
             "selection_reason": turn.selection_reason,
             "prompt": turn.prompt,
+            "prompt_sha256": hashlib.sha256(turn.prompt.encode("utf-8")).hexdigest() if turn.prompt else None,
+            "persona_identity": (turn.context_snapshot or {}).get("persona_snapshot"),
+            "interventions": (turn.context_snapshot or {}).get("interventions", {}),
             "prompt_version": turn.prompt_version,
             "provider": turn.provider,
             "model": turn.model,
@@ -392,7 +400,7 @@ def _add_post_stimuli(
         default_kind=default_kind,
         default_priority=default_priority,
         exclude_agent_id=post.author_agent_id,
-        reply_to_agent_id=parent.author_agent_id if parent is not None else None,
+        reply_to_agent_id=participant_post(parent).author_agent_id if parent is not None else None,
     )
     stimuli = [
         repo.add_stimulus(
@@ -895,6 +903,7 @@ def create_app(
             repo = Repository(session)
             before = _latest_event_id(session)
             agent = repo.get_agent(agent_id)
+            previous_configuration = capture_agent(agent)
             try:
                 validate_hosted_provider(changes.get("provider", agent.provider), changes.get("settings", agent.settings))
             except ValueError as exc:
@@ -911,6 +920,9 @@ def create_app(
                     if duplicate is not None:
                         raise HTTPException(409, f"agent handle @{value} already exists")
                 setattr(agent, name, value)
+            previous_version = previous_configuration["persona"]["version"]
+            persona_changed = persona_identity(agent)["sha256"] != previous_configuration["persona"]["sha256"]
+            agent.persona_version = (previous_version if type(previous_version) is int else 1) + int(persona_changed)
             session.flush()
             repo.add_event(
                 "agent.updated",
@@ -919,6 +931,21 @@ def create_app(
                 actor_id=human_handle(request),
                 payload={"fields": sorted(changes)},
             )
+            current_configuration = capture_agent(agent)
+            if current_configuration != previous_configuration:
+                affected = [run for run in session.scalars(select(Run).where(Run.state.not_in(sessions.TERMINAL)))
+                            if agent.id in run.config.get("agent_ids", [agent.id])
+                            and agent.id not in run.config.get("agent_overrides", {})]
+                for affected_run in affected or [None]:
+                    if affected_run is not None:
+                        unavailable = affected_run.config.get("unavailable_agent_ids", [])
+                        affected_run.config = {**affected_run.config,
+                            "unavailable_agent_ids": [value for value in unavailable if value != agent.id]}
+                    repo.add_event("agent.config_changed", agent_id=agent.id,
+                        run_id=affected_run.id if affected_run else None, actor_type="human", actor_id=human_handle(request),
+                        payload=redact({"scope": "registration", "session_type": affected_run.config.get("session_type", "collaboration") if affected_run else None,
+                            "before": previous_configuration["configuration"], "after": current_configuration["configuration"],
+                            "persona_before": previous_configuration["persona"], "persona_after": current_configuration["persona"]}))
             output = _agent_json(agent)
         await publish_since(before)
         return output
@@ -1177,6 +1204,8 @@ def create_app(
     app.include_router(findings_router(factory, publish_since))
     from .export_api import router as export_router
     app.include_router(export_router(factory))
+    from .interventions_api import router as interventions_router
+    app.include_router(interventions_router(factory, swarm, publish_since))
     return app
 
 

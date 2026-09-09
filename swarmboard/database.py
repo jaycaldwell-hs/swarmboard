@@ -88,6 +88,24 @@ def init_db(bind: Engine | None = None) -> None:
     # contract explicit even if future code accidentally mutates an Event ORM
     # instance or issues a bulk DELETE.
     with target.begin() as connection:
+        agent_columns = {
+            row[1] for row in connection.exec_driver_sql("PRAGMA table_info('agents')")
+        }
+        if "persona_version" not in agent_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE agents ADD COLUMN persona_version INTEGER NOT NULL DEFAULT 1"
+            )
+            # Earlier intervention builds kept this counter in settings. Move
+            # its meaning into a dedicated column without rewriting settings
+            # or replaying stale counters on subsequent application starts.
+            for row in connection.exec_driver_sql("SELECT id, settings FROM agents").mappings():
+                settings = json.loads(row["settings"]) if row["settings"] else {}
+                version = settings.get("persona_version") if isinstance(settings, dict) else None
+                if type(version) is int and 0 < version < 2**63:
+                    connection.exec_driver_sql(
+                        "UPDATE agents SET persona_version = ? WHERE id = ?", (version, row["id"])
+                    )
+
         # ``create_all`` does not add columns to an existing table.  Turn lease
         # ownership was introduced after the first schema shipped, so upgrade
         # older SQLite files in place before the ORM attempts to load a Turn.

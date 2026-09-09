@@ -30,15 +30,21 @@ sibling group and source-turn IDs, findings, and the prompt inclusion option.
 `snapshot.last_event_id` identifies the global event-stream boundary visible to
 the export.
 
-`roster` describes registrations as of export time, with provider/model,
-environment-variable names, settings, permissions, and persona hashes.
+`roster` describes effective participants as of export time, including session
+configuration overrides, provider/model, environment-variable names, settings,
+permissions, and persona versions/hashes.
 `roster_at_creation` preserves the saved session roster when one exists. These
 are deliberately distinguished: turn-level provider/model, prompt and persona
 captures are the evidence of what an earlier turn actually received. Fork
 rosters additionally preserve the registration snapshots taken when branching.
 
-`interventions` is an empty array in Phase 3, reserved for the subsequent
-attributed instruction, configuration, impersonation, and memory work.
+`interventions` contains `instructions`, `memories`, `config_changes`, and
+`impersonations`. Instructions include immutable creation IDs, author, body/hash,
+and revocation state. Memories include IDs, author, body/hash, tags, version,
+replacement ID and projected active state. Configuration events retain attributed,
+redacted before/after values. Impersonations retain both the human author and the
+displayed identity. This header is the current projection; turn snapshots below
+describe the interventions in effect when each prompt was captured.
 
 ## Turns
 
@@ -70,7 +76,16 @@ Additional fields include:
   `inherited_context_post_ids`, and `context_post_id_map`: branch provenance and
   original-to-child post-ID mappings for reused prompts.
 - `flags` and `notes`: applicable turn/post flags, including resolved flags,
-  and the run's human notes. `interventions` is reserved as described above.
+  and the run's human notes.
+- `interventions`: targeted private instructions and configuration changes,
+  active seeded memories for that participant, and impersonated/system posts in
+  the captured thread context. `context_snapshot.memories` identifies the memories
+  actually retrieved, with their body hashes. `context_snapshot.agent_snapshot`
+  pins the effective configuration at selection time. These ledger fields are
+  captured separately from participant messages and are never injected into peers'
+  prompts. Older turns without these captures have an empty interventions object.
+  Reused resample prompts retain the original intervention/persona capture while
+  the agent configuration snapshot identifies the current transport configuration.
 
 Outcomes are `executed`, `passed`, `rejected_by_policy`, `invalid_output`, or
 `provider_failure`; an unfinished turn may have a null outcome. Legacy outcomes
@@ -85,7 +100,10 @@ preserve every post, including human inputs and inherited evidence without a
 corresponding generated turn. Each includes the post/run/thread IDs, per-thread
 sequence, parent ID, author, body, intent, metadata, creation time, inherited
 marker and applicable flags. Inheritance IDs and original creation time are in
-`metadata`.
+`metadata`. Impersonated and board-notice posts keep the actual human in the author
+fields. Their metadata records `author_human`, `displayed_as_agent`,
+`displayed_as_agent_id`, `is_impersonation`, and `is_system_notice`; the participant
+view renders the selected identity without replacing the attributed ledger row.
 
 `events.jsonl` contains `record_type: "event"` records with every original event
 field, ordered by increasing event ID. It is the run's recorded audit stream,

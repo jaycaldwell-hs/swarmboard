@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from . import sessions, autonomy, cadence
 from . import run_policy
 from .config import DEFAULT_AGENT_OUTPUT_TOKENS
+from .context_views import agent_snapshot, intervention_snapshot, participant_post, participant_posts, persona_identity, text_hash
 from .gateways import (
     AgentAction,
     ChatMessage,
@@ -357,7 +358,8 @@ class SwarmEngine:
             return view
         view = SimpleNamespace(**{name: getattr(view, name) for name in (
             "id", "handle", "role", "persona", "provider", "model", "enabled", "settings",
-            "permissions", "cooldown_seconds", "last_spoke_at")})
+            "permissions", "cooldown_seconds", "last_spoke_at")},
+            persona_version=getattr(view, "persona_version", view.settings.get("persona_version", 1)))
         policy = run_policy.policy_for(run)
         view.cooldown_seconds = 0
         view.last_spoke_at = None
@@ -949,6 +951,7 @@ class SwarmEngine:
                         )
                     )
                     posts.reverse()
+                    posts = participant_posts(posts)
                     agents = [self._turn_agent(session, run, a, stimulus) for a in
                               repo.list_agents(enabled_only=True, agent_ids=run.config.get("agent_ids"))]
                     attempted = set(stimulus.payload.get("attempted_agent_ids", []))
@@ -1086,7 +1089,9 @@ class SwarmEngine:
                                 original = repo.get_turn(stimulus.payload["reuse_turn_id"])
                                 captured_prompt = original.prompt
                                 messages = self._decode_prompt(captured_prompt)
+                                current_configuration = context["agent_snapshot"]
                                 context = dict(original.context_snapshot)
+                                context["agent_snapshot"] = current_configuration
                                 memory_ids = list(original.retrieved_memory_ids)
                             sampling = self._sampling_settings(agent, run)
                             turn_seed = _stable_int(run.seed, stimulus.id, agent.id)
@@ -1132,6 +1137,9 @@ class SwarmEngine:
         at_event_id: int | None = None,
     ) -> tuple[dict[str, Any], list[ChatMessage], list[str]]:
         selected_posts = cadence.transcript(Repository(session), run, at_event_id=at_event_id) if cadence.enabled(run) else list(posts)[-self._context_limit(run) :]
+        selected_posts = participant_posts(selected_posts)
+        from .interventions import inactive_memory_ids
+        inactive = inactive_memory_ids(Repository(session), run.id, at_event_id=at_event_id)
         memories = list(
             session.scalars(
                 select(Memory)
@@ -1142,11 +1150,15 @@ class SwarmEngine:
                     (Memory.agent_id == agent.id) | Memory.agent_id.is_(None),
                 )
                 .order_by(Memory.updated_at.desc())
-                .limit(self.config.memory_limit)
             )
         )
         if autonomy.enabled(run):
             memories = [memory for memory in memories if memory.run_id == run.id]
+        memories = [memory for memory in memories if memory.id not in inactive]
+        if at_event_id is not None:
+            cutoff_time = session.get(Event, at_event_id).created_at
+            memories = [memory for memory in memories if memory.created_at <= cutoff_time]
+        memories = memories[:self.config.memory_limit]
         post_payload = [
             {
                 "id": post.id,
@@ -1168,6 +1180,7 @@ class SwarmEngine:
                 "claim": memory.claim,
                 "source_post_ids": list(memory.source_post_ids),
                 "confidence": memory.confidence,
+                "sha256": text_hash(memory.claim),
             }
             for memory in memories
         ]
@@ -1215,7 +1228,7 @@ class SwarmEngine:
                 for peer in participants
             ]
             context["persona_snapshot"] = {
-                "version": snapshot.version, "sha256": snapshot.digest,
+                **persona_identity(agent), "schema_version": snapshot.version,
                 "prompt_version": HARNESS_PROMPT_VERSION, "files": snapshot.file_manifest,
             }
         else:
@@ -1234,11 +1247,20 @@ class SwarmEngine:
             "For pass, parent_post_id, title, body, and intent must all be null. Never use "
             "an empty string where null is required."
         )
+        intervention_state = intervention_snapshot(Repository(session), run, agent, selected_posts, at_event_id=at_event_id)
+        if intervention_state["private_instructions"]:
+            system += "\n\nPrivate instructions from the human operator for this participant:\n"
+            system += "\n\n".join(item["body"] for item in intervention_state["private_instructions"])
         user = "Captured immutable discussion context:\n" + json.dumps(
             context,
             ensure_ascii=False,
             separators=(",", ":"),
         )
+        # These fields belong to the researcher ledger, never to participant
+        # messages: they reveal interventions and actual configuration.
+        context["agent_snapshot"] = agent_snapshot(agent)
+        context.setdefault("persona_snapshot", persona_identity(agent))
+        context["interventions"] = intervention_state
         return context, [ChatMessage(role="system", content=system), ChatMessage(role="user", content=user)], [
             memory.id for memory in memories
         ]
@@ -1258,6 +1280,11 @@ class SwarmEngine:
             agent = repo.get_agent(turn.agent_id)
             run = repo.get_run(turn.run_id) if turn.run_id else None
             agent = self._turn_agent(session, run, agent, repo.get_stimulus(turn.stimulus_id) if turn.stimulus_id else None)
+            captured_configuration = (turn.context_snapshot or {}).get("agent_snapshot", {}).get("configuration")
+            if captured_configuration:
+                agent = SimpleNamespace(**{name: getattr(agent, name) for name in (
+                    "id", "handle", "role", "enabled", "permissions", "cooldown_seconds", "last_spoke_at")},
+                    **captured_configuration)
             repo.mark_turn_calling(turn.id)
             messages = self._decode_prompt(turn.prompt)
             seed = turn.seed
@@ -1344,6 +1371,7 @@ class SwarmEngine:
                     current_posts = (list(policy_session.scalars(select(Post).where(Post.thread_id == current_thread.id)
                                      .order_by(Post.sequence))) if run_policy.is_research(current_run)
                                      else Repository(policy_session).list_posts(current_thread.id, limit=500))
+                    current_posts = participant_posts(current_posts)
                     fingerprints = {
                         str(post.metadata_json.get("action_fingerprint"))
                         for post in current_posts
@@ -1634,6 +1662,7 @@ class SwarmEngine:
             thread = autonomy.action_thread(repo, run, turn, action)
             posts = (list(session.scalars(select(Post).where(Post.thread_id == thread.id).order_by(Post.sequence)))
                      if run_policy.is_research(run) else repo.list_posts(thread.id, limit=500))
+            posts = participant_posts(posts)
             fingerprints = {
                 str(post.metadata_json.get("action_fingerprint"))
                 for post in posts
@@ -1712,6 +1741,7 @@ class SwarmEngine:
                 and sum(
                     post.author_type == AuthorType.AGENT.value
                     and not post.metadata_json.get("is_inherited")
+                    and not post.metadata_json.get("is_impersonation")
                     for post in posts
                 )
                 >= min(run.per_thread_quota, run.config.get("inherited_thread_quota_remaining", run.per_thread_quota))
@@ -1812,7 +1842,7 @@ class SwarmEngine:
                             default_kind=StimulusKind.AGENT_POST,
                             default_priority=2.0,
                             exclude_agent_id=None if autonomy.enabled(run) else agent.id,
-                            reply_to_agent_id=reply_parent.author_agent_id if reply_parent is not None else None,
+                            reply_to_agent_id=participant_post(reply_parent).author_agent_id if reply_parent is not None else None,
                         )
                         for plan in plans:
                             repo.add_stimulus(

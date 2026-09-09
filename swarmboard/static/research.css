@@ -55,3 +55,17 @@
 .flagged-badge { display: inline-block; margin-left: 6px; color: #926227; font-size: 10px; font-weight: 600; }
 .finding-trace-action { margin-bottom: 12px; }
 .suggested-tags { font-size: 12px; line-height: 2; }
+.interventions-panel { margin-top: 16px; padding-top: 12px; border-top: 1px solid #ddd; }
+.interventions-panel summary { cursor: pointer; }
+.interventions-panel > label { display: flex; flex-direction: column; gap: 5px; margin: 12px 0; font-size: 13px; }
+.intervention-actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 10px 0; }
+.interventions-panel button { padding: 6px 9px; border: 1px solid #bcb4c3; border-radius: 5px; cursor: pointer; }
+.interventions-panel button:disabled { opacity: .5; cursor: default; }
+.intervention-item { border-top: 1px solid #eee; margin-top: 10px; padding-top: 12px; overflow-wrap: anywhere; font-size: 12px; }
+.intervention-item > p { margin: 8px 0; white-space: pre-wrap; }
+.intervention-item small { display: block; color: #6d6375; margin: 5px 0; font-size: 11px; }
+.intervention-item details { margin: 8px 0; }
+.intervention-item pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font-size: 11px; }
+.intervention-state { display: block; font-size: 10px; color: #6d6375; }
+.intervention-badge { display: inline-block; padding: 2px 5px; color: #7b4d23; background: #f6eddc; border-radius: 4px; font-size: 10px; }
+.intervention-empty, [data-intervention-status] { color: #6d6375; font-size: 12px; }

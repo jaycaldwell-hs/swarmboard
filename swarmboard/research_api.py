@@ -139,20 +139,21 @@ def router(factory, swarm, publish_since):
                                            cascade_depth=0, payload={})
             context, messages, memories = swarm._build_context(session, run=run, thread=thread,
                 posts=posts, stimulus=stimulus, agent=agent, at_event_id=at_event_id)
+            participant_context = json.loads(messages[-1].content.split("\n", 1)[1])
             if at_post_id:
-                context["thread"]["current_sequence"] = posts[-1].sequence if posts else 0
-                context["thread"]["summary"] = None
+                participant_context["thread"]["current_sequence"] = posts[-1].sequence if posts else 0
+                participant_context["thread"]["summary"] = None
                 # Re-encode after historical visibility adjustments.
-                messages[-1].content = "Captured immutable discussion context:\n" + json.dumps(context, ensure_ascii=False, separators=(",", ":"))
+                messages[-1].content = "Captured immutable discussion context:\n" + json.dumps(participant_context, ensure_ascii=False, separators=(",", ":"))
             prompt = json.dumps([message.model_dump() for message in messages], ensure_ascii=False, separators=(",", ":"))
             if not at_post_id and stimulus.payload.get("reuse_turn_id"):
                 original = repo.get_turn(stimulus.payload["reuse_turn_id"])
                 prompt = original.prompt
-                context = original.context_snapshot
                 messages = swarm._decode_prompt(prompt)
+                participant_context = json.loads(messages[-1].content.split("\n", 1)[1])
                 memories = original.retrieved_memory_ids
             return redact({"run_id": run.id, "thread_id": thread.id, "agent_id": agent.id,
-                    "messages": [m.model_dump() for m in messages], "context": context, "prompt": prompt,
+                    "messages": [m.model_dump() for m in messages], "context": participant_context, "prompt": prompt,
                     "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(), "memory_ids": memories,
                     "at_post_id": at_post_id, "view_kind": "participant_context_preview"})
 

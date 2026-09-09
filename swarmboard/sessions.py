@@ -39,7 +39,21 @@ def retire_scripted_runs(repo: Repository) -> None:
             repo.control_run(run.id, "stop", reason="scripted experiments retired")
 
 
+def configured_agent(config, agent):
+    """Compose registered configuration and session overrides before scheduling."""
+    overrides = config.get("agent_overrides", {}).get(agent.id, {})
+    if overrides:
+        current = {name: getattr(agent, name) for name in (
+            "id", "handle", "role", "persona", "provider", "model", "enabled", "settings",
+            "permissions", "cooldown_seconds", "last_spoke_at", "persona_version")}
+        current.update({name: copy.deepcopy(overrides[name]) for name in (
+            "provider", "model", "persona", "settings", "persona_version") if name in overrides})
+        agent = SimpleNamespace(**current)
+    return agent
+
+
 def session_agent(session, run: Run | None, agent):
+    agent = configured_agent(run.config if run else {}, agent)
     if run is None or run.config.get("interaction_mode") != "autonomous":
         return adapt_agent(run, agent)
     saved = session.get(Experiment, run.id)
@@ -58,6 +72,7 @@ def session_agent(session, run: Run | None, agent):
         provider=agent.provider, model=agent.model, enabled=agent.enabled,
         settings=copy.deepcopy(agent.settings or {}), permissions=dict(agent.permissions or {}),
         cooldown_seconds=cooldown, last_spoke_at=last_spoke,
+        persona_version=getattr(agent, "persona_version", agent.settings.get("persona_version", 1)),
     ))
 
 
@@ -156,7 +171,7 @@ def activity(repo: Repository, run_id: str) -> dict:
     for snapshot in manifest["participants"]:
         current = repo.session.get(Agent, snapshot["id"])
         # Active sessions use live configuration; archived records retain their recorded roster.
-        identity = current if current is not None and run.state not in TERMINAL and not archived else SimpleNamespace(**snapshot)
+        identity = session_agent(repo.session, run, current) if current is not None and run.state not in TERMINAL and not archived else SimpleNamespace(**snapshot)
         participants.append({"id": snapshot["id"], "handle": identity.handle,
                              "provider": identity.provider, "model": identity.model,
                              "available": bool(not archived and run.state not in TERMINAL and current

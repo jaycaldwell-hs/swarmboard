@@ -54,8 +54,7 @@ def redact(value: Any) -> Any:
         if isinstance(item, Mapping):
             result = {}
             for key, content in item.items():
-                sensitive = (_is_literal_api_key(key) or str(key).strip().casefold() in _SENSITIVE_HEADERS
-                             or str(key).strip().casefold() in {"password", "secret", "access_token", "refresh_token"})
+                sensitive = _credential_field(key) is not None
                 result[clean(str(key))] = "[REDACTED]" if sensitive and content is not None else clean(content)
             return result
         if isinstance(item, (list, tuple)):
@@ -70,6 +69,19 @@ def _is_literal_api_key(name: object) -> bool:
     return normalized == "apikey"
 
 
+def _credential_field(name: object) -> str | None:
+    """Canonical audit labels for fields that hold credential values."""
+    normalized = str(name).strip().casefold().replace("_", "").replace("-", "")
+    if normalized == "apikey":
+        return "api_key"
+    header = _SENSITIVE_HEADERS.get(str(name).strip().casefold())
+    if header:
+        return header
+    if normalized in {"password", "secret", "clientsecret", "accesstoken", "refreshtoken", "credential", "credentials", "token"}:
+        return str(name)
+    return None
+
+
 def scrub_agent_settings(settings: Mapping[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
     """Remove persisted credential values while retaining benign provider settings.
 
@@ -77,26 +89,25 @@ def scrub_agent_settings(settings: Mapping[str, Any] | None) -> tuple[dict[str, 
     values are never included.
     """
 
-    cleaned = dict(settings or {})
     removed: list[str] = []
-    for key in list(cleaned):
-        if _is_literal_api_key(key):
-            cleaned.pop(key, None)
-            if "settings.api_key" not in removed:
-                removed.append("settings.api_key")
 
-    headers = cleaned.get("headers")
-    if isinstance(headers, Mapping):
-        safe_headers = dict(headers)
-        for key in list(safe_headers):
-            canonical = _SENSITIVE_HEADERS.get(str(key).strip().casefold())
-            if canonical is not None:
-                safe_headers.pop(key, None)
-                label = f"settings.headers.{canonical}"
-                if label not in removed:
-                    removed.append(label)
-        cleaned["headers"] = safe_headers
-    return cleaned, removed
+    def clean(value, path):
+        if isinstance(value, Mapping):
+            output = {}
+            for key, content in value.items():
+                credential = _credential_field(key)
+                if credential:
+                    label = f"{path}.{credential}"
+                    if label not in removed:
+                        removed.append(label)
+                else:
+                    output[key] = clean(content, f"{path}.{key}")
+            return output
+        if isinstance(value, (list, tuple)):
+            return [clean(content, f"{path}[{index}]") for index, content in enumerate(value)]
+        return value
+
+    return clean(dict(settings or {}), "settings"), removed
 
 
 def validate_agent_settings(settings: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -108,10 +119,20 @@ def validate_agent_settings(settings: Mapping[str, Any] | None) -> dict[str, Any
         raise ValueError(
             "literal credentials cannot be stored in agent settings; use api_key_env"
         )
-    api_key_env = original.get("api_key_env")
-    if api_key_env not in (None, ""):
-        if not isinstance(api_key_env, str) or _ENV_NAME_RE.fullmatch(api_key_env) is None:
-            raise ValueError("api_key_env must be a valid environment-variable name")
+    def validate_env_names(value):
+        if isinstance(value, Mapping):
+            for name, content in value.items():
+                if str(name).strip().casefold().replace("_", "").replace("-", "") == "apikeyenv" and content not in (None, ""):
+                    if not isinstance(content, str) or _ENV_NAME_RE.fullmatch(content) is None:
+                        raise ValueError("api_key_env must be a valid environment-variable name")
+                validate_env_names(content)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                validate_env_names(item)
+    validate_env_names(original)
+    version = original.get("persona_version", 1)
+    if type(version) is not int or version < 1:
+        raise ValueError("persona_version must be a positive integer")
     return original
 
 
@@ -159,6 +180,16 @@ def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) 
         raise ValueError(destination_error)
     if values.get("api_key_env") != key_name:
         raise ValueError("hosted provider must use its matching API key environment variable")
+    # Deployment allowlists can narrow the supported destination/key pair.
+    # Additional entries never enable a new host, IP range, or credential name.
+    hosts = {entry.strip().casefold() for entry in os.getenv(
+        "SWARMBOARD_ALLOWED_PROVIDER_HOSTS", "openrouter.ai").split(",") if entry.strip()}
+    env_names = {entry.strip() for entry in os.getenv(
+        "SWARMBOARD_ALLOWED_CREDENTIAL_ENV_VARS", "OPENROUTER_API_KEY").split(",") if entry.strip()}
+    if host not in hosts:
+        raise ValueError("provider host is outside SWARMBOARD_ALLOWED_PROVIDER_HOSTS")
+    if key_name not in env_names:
+        raise ValueError("credential environment name is outside SWARMBOARD_ALLOWED_CREDENTIAL_ENV_VARS")
 
 
 __all__ = ["scrub_agent_settings", "validate_agent_settings", "validate_hosted_provider"]

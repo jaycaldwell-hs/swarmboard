@@ -7,6 +7,7 @@ from . import cadence, sessions
 from .models import Event, Post, Thread
 from .repository import InvalidStateError
 from .stimuli import plan_reactive_stimuli
+from .context_views import participant_posts
 
 OPENING = "You share this board with the other participants. Decide what you want to explore and how you want to interact."
 INTERFACE = """You are a participant in a shared, persistent board.
@@ -86,6 +87,7 @@ def context(repo, run, agent, *, at_event_id=None):
         if at_event_id is not None:
             query = query.join(Event, (Event.post_id == Post.id) & (Event.event_type == "post.created")).where(Event.id <= at_event_id)
         recent = list(repo.session.scalars(query.order_by(Post.sequence.desc()).limit(4)))
+        recent = participant_posts(recent)
         threads.append({"id": thread.id, "title": thread.title, "status": thread.status,
                         "recent_posts": [{"id": p.id, "author_handle": p.author_handle,
                                           "body": p.body[:3000]} for p in reversed(recent)]})

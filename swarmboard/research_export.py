@@ -18,6 +18,8 @@ from .findings import list_findings
 from .models import Agent, Event, Experiment, Post, Run, Stimulus, Thread, Turn, utc_now
 from .repository import Repository
 from .run_policy import normalize_config
+from .context_views import persona_identity
+from . import sessions
 
 
 EXPORT_SCHEMA_VERSION = 1
@@ -82,11 +84,13 @@ def header_record(repo, run, exported_at: datetime, findings: dict, *, include_p
         if agent is None:
             roster.append({"id": agent_id, "registration_available": False})
             continue
+        agent = sessions.configured_agent(run.config, agent)
         roster.append({
             "id": agent.id, "handle": agent.handle, "provider": agent.provider, "model": agent.model,
             "settings": deepcopy(agent.settings), "permissions": deepcopy(agent.permissions),
-            "persona_sha256": _hash(agent.persona),
-            "persona_version": agent.settings.get("persona_version") or _hash(agent.persona),
+            "persona_sha256": persona_identity(agent)["sha256"],
+            "persona_version": persona_identity(agent)["version"],
+            "persona_identity": persona_identity(agent),
             "configuration_as_of": "export", "enabled": agent.enabled,
         })
     opening = deepcopy(manifest.get("opening"))
@@ -98,6 +102,7 @@ def header_record(repo, run, exported_at: datetime, findings: dict, *, include_p
                        "body": first.body, "author_handle": first.author_handle,
                        "author_type": first.author_type}
     config = normalize_config(run.config)
+    from .interventions import list_interventions
     return _record(
         "header", run_id=run.id, exported_at=exported_at,
         session_type=config["session_type"], policy=config["policy"], config=deepcopy(run.config),
@@ -112,7 +117,7 @@ def header_record(repo, run, exported_at: datetime, findings: dict, *, include_p
         roster=roster, roster_at_creation=deepcopy(manifest.get("participants", [])),
         opening=opening, lineage=deepcopy(run.config.get("lineage")),
         sibling_group_id=run.config.get("sibling_group_id"),
-        source_turn_id=run.config.get("source_turn_id"), interventions=[],
+        source_turn_id=run.config.get("source_turn_id"), interventions=list_interventions(repo, run.id),
         findings=findings, include_prompts=include_prompts,
         snapshot={"last_event_id": repo.session.scalar(select(func.max(Event.id))) or 0},
     )
@@ -149,7 +154,7 @@ def _turn_record(repo, run, turn, sequence, findings, *, include_prompts):
         context_post_id_map={post_id: post_map[post_id] for post_id in turn.context_post_ids if post_id in post_map},
         flags=[flag for flag in findings["flags"] if flag.get("turn_id") == turn.id
                or (turn.resulting_post_id and flag.get("post_id") == turn.resulting_post_id)],
-        notes=findings["notes"], interventions=[],
+        notes=findings["notes"], interventions=deepcopy(context.get("interventions", {})),
     )
     if include_prompts:
         data["prompt"] = prompt

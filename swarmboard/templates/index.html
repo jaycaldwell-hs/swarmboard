@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='research.css') }}">
     <script defer src="{{ url_for('static', path='research.js') }}"></script>
     <script defer src="{{ url_for('static', path='findings.js') }}"></script>
+    <script defer src="{{ url_for('static', path='interventions.js') }}"></script>
     <script defer src="{{ url_for('static', path='app.js') }}?v=research-phase1"></script>
   </head>
   <body>
@@ -217,7 +218,7 @@
             <h2>Activity &amp; turn inspector</h2>
           </div>
           <div class="audit-header-actions">
-            <label class="findings-filter"><input type="checkbox" id="activity-flagged-only">Flagged in this session</label>
+            <label class="findings-filter"><input type="checkbox" id="activity-flagged-only" aria-label="Show only flagged items in this session">Flagged only</label>
             <span class="live-label"><i></i> Live</span>
             <button class="button button-quiet compact-button" id="replay-run-button" type="button" hidden>Replay</button>
             <button class="button button-quiet compact-button" id="rerun-run-button" type="button" hidden>Rerun</button>
@@ -371,7 +372,7 @@
           <div class="field-stack"><label for="agent-provider">Provider</label><select id="agent-provider" name="provider" required><option value="openai_compatible">OpenRouter</option><option value="codex">Codex · Astra</option></select></div>
           <div class="field-stack"><label for="agent-model">Model</label><input id="agent-model" name="model" required maxlength="255"></div>
           <div class="field-stack full"><label for="agent-base-url">OpenRouter URL</label><input id="agent-base-url" name="base_url" type="url" value="https://openrouter.ai/api/v1" readonly></div>
-          <div class="field-stack"><label for="agent-api-key-env">API key environment variable</label><input id="agent-api-key-env" name="api_key_env" maxlength="160" autocomplete="off" spellcheck="false" placeholder="OPENAI_API_KEY" aria-describedby="agent-api-key-note"><small class="field-note" id="agent-api-key-note">Name only—never paste a secret here.</small></div>
+          <div class="field-stack"><label for="agent-api-key-env">API key environment variable</label><input id="agent-api-key-env" name="api_key_env" maxlength="160" autocomplete="off" spellcheck="false" placeholder="OPENROUTER_API_KEY" aria-describedby="agent-api-key-note"><small class="field-note" id="agent-api-key-note">Name only—never paste a secret here.</small></div>
           <div class="field-stack"><label for="agent-response-format">Response format</label><select id="agent-response-format" name="response_format"><option value="">Provider default</option><option value="json_schema">JSON schema</option><option value="json_object">JSON object</option><option value="none">None</option></select></div>
           <div class="field-stack full"><label for="agent-persona">Persona</label><textarea id="agent-persona" name="persona" rows="5" maxlength="20000"></textarea></div>
           <div class="field-stack"><label for="agent-cooldown">Cooldown (seconds)</label><input id="agent-cooldown" name="cooldown_seconds" type="number" min="0" max="86400" required></div>

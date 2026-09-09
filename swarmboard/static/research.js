@@ -45,8 +45,8 @@
     updateVisibility();
   }
 
-  async function api(url, body) {
-    const response = await fetch(url, body === undefined ? {} : {method: "POST",
+  async function api(url, body, method = "POST") {
+    const response = await fetch(url, body === undefined ? {} : {method,
       headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     const data = await response.json();
     if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
@@ -104,7 +104,8 @@
     root.innerHTML = `<details class="session-tools" ${saved.open ? "open" : ""}><summary>Participant tools</summary><form>
       <label>Participant<select name="agent_id" required>${participants.map(agent => `<option value="${esc(agent.id)}" ${agent.id === saved.agent_id ? "selected" : ""}>@${esc(agent.handle)}</option>`).join("")}</select></label>
       <label>Thread<select name="thread_id">${choices.map(item => `<option value="${esc(item.id)}" ${item.id === saved.thread_id ? "selected" : ""}>${esc(item.title || item.id)}</option>`).join("")}</select></label>
-      <label>Context through<select name="at_post_id"><option value="">Latest post</option>${(saved.thread_id === thread.id ? thread.posts || [] : []).map(post => `<option value="${esc(post.id)}" ${post.id === saved.at_post_id ? "selected" : ""}>Post ${esc(post.sequence)} · ${esc(post.author_handle)}</option>`).join("")}</select></label>
+      <label>Reference post<select name="at_post_id"><option value="">Latest post</option>${(saved.thread_id === thread.id ? thread.posts || [] : []).map(post => `<option value="${esc(post.id)}" ${post.id === saved.at_post_id ? "selected" : ""}>Post ${esc(post.sequence)} · ${esc(post.author_handle)}</option>`).join("")}</select></label>
+      <p class="field-note">Participant view shows history through this post. Force next uses it as the trigger.</p>
       ${runnable ? `<label class="check"><input type="checkbox" name="override_cooldown" ${saved.override_cooldown ? "checked" : ""}><span>Override cooldown for this turn</span></label>` : ""}
       <div class="session-tool-actions">${runnable ? `<button type="submit" data-command="force" ${saved.busy ? "disabled" : ""}>Force next</button>` : ""}<button type="button" data-command="view">Participant view</button></div>
       <p data-status role="status">${esc(saved.status)}</p></form></details>`;
@@ -186,35 +187,62 @@
     });
   }
 
-  function navigationHtml(run, runs) {
+  function rootThreads(threads, runs) {
+    const result = new Map();
+    for (const run of runs) {
+      const candidates = threads.filter(thread => thread.run_id === run.id);
+      candidates.sort((a, b) => {
+        if (a.created_at && b.created_at) return String(a.created_at).localeCompare(String(b.created_at)) || String(a.id).localeCompare(String(b.id));
+        return a.id === run.thread_id ? -1 : b.id === run.thread_id ? 1 : 0;
+      });
+      if (candidates.length) result.set(run.id, candidates[0]);
+    }
+    return result;
+  }
+
+  function navigationHtml(run, runs, threads = []) {
     if (!isResearch(run)) return "";
     const parent = lineage(run);
     const siblings = groupId(run) ? runs.filter(item => groupId(item) === groupId(run)) : [];
-    return `${parent.parent_thread_id ? `<p class="lineage-breadcrumb">Forked from <a href="/#thread=${encodeURIComponent(parent.parent_thread_id)}">source discussion</a>${parent.parent_post_id ? ` · <a href="/#thread=${encodeURIComponent(parent.parent_thread_id)}&post=${encodeURIComponent(parent.parent_post_id)}">source post</a>` : ""}</p>` : ""}${siblings.length > 1 ? `<nav class="sibling-navigation" aria-label="Resample siblings">${siblings.map((sibling, index) => `<a href="/#thread=${encodeURIComponent(sibling.thread_id || "")}" ${sibling.id === run.id ? 'aria-current="page"' : ""}>Sample ${index + 1}</a>`).join("")}</nav>` : ""}`;
+    const roots = rootThreads(threads, runs);
+    return `${parent.parent_thread_id ? `<p class="lineage-breadcrumb">Forked from <a href="/#thread=${encodeURIComponent(parent.parent_thread_id)}">source discussion</a>${parent.parent_post_id ? ` · <a href="/#thread=${encodeURIComponent(parent.parent_thread_id)}&post=${encodeURIComponent(parent.parent_post_id)}">source post</a>` : ""}</p>` : ""}${siblings.length > 1 ? `<nav class="sibling-navigation" aria-label="Resample siblings">${siblings.map((sibling, index) => `<a href="/#thread=${encodeURIComponent(roots.get(sibling.id)?.id || sibling.thread_id || "")}" ${sibling.id === run.id ? 'aria-current="page"' : ""}>Sample ${index + 1}</a>`).join("")}</nav>` : ""}`;
   }
 
   function threadEntries(threads, runs, selectedId, hideResearch = false) {
     const runById = new Map(runs.map(run => [run.id, run]));
     const source = threads.filter(thread => !hideResearch || !isResearch(runById.get(thread.run_id)));
-    const sourceById = new Map(source.map(thread => [thread.id, thread]));
+    const roots = rootThreads(source, runs);
     const groups = new Map();
     source.forEach(thread => {
       const group = groupId(runById.get(thread.run_id));
-      if (group) groups.set(group, [...(groups.get(group) || []), thread]);
+      if (group && roots.get(thread.run_id)?.id === thread.id) groups.set(group, [...(groups.get(group) || []), thread]);
     });
+    const selectedRun = source.find(thread => thread.id === selectedId)?.run_id;
+    const representative = group => group.find(item => item.id === selectedId || item.run_id === selectedRun) || group[0];
     const collapsed = source.filter(thread => {
       const group = groups.get(groupId(runById.get(thread.run_id)));
-      return !group || (group.find(item => item.id === selectedId) || group[0]).id === thread.id;
+      return !group || roots.get(thread.run_id)?.id !== thread.id || representative(group).id === thread.id;
     });
+    const collapsedIds = new Set(collapsed.map(thread => thread.id));
+    const parentOf = thread => {
+      const run = runById.get(thread.run_id);
+      const root = roots.get(thread.run_id);
+      if (!lineage(run).parent_thread_id) return null;
+      if (root?.id !== thread.id) {
+        const group = groups.get(groupId(run));
+        return group ? representative(group).id : root?.id;
+      }
+      return lineage(run).parent_thread_id;
+    };
     const seen = new Set(), output = [];
     const append = (thread, depth) => {
       if (seen.has(thread.id)) return;
       seen.add(thread.id);
       const run = runById.get(thread.run_id);
-      output.push({thread, depth: Math.min(depth, 8), siblingCount: groups.get(groupId(run))?.length || 0});
-      collapsed.filter(child => lineage(runById.get(child.run_id)).parent_thread_id === thread.id).forEach(child => append(child, depth + 1));
+      output.push({thread, depth: Math.min(depth, 8), siblingCount: roots.get(thread.run_id)?.id === thread.id ? groups.get(groupId(run))?.length || 0 : 0});
+      collapsed.filter(child => parentOf(child) === thread.id).forEach(child => append(child, depth + 1));
     };
-    collapsed.filter(thread => !sourceById.has(lineage(runById.get(thread.run_id)).parent_thread_id)).forEach(thread => append(thread, 0));
+    collapsed.filter(thread => !collapsedIds.has(parentOf(thread))).forEach(thread => append(thread, 0));
     collapsed.forEach(thread => append(thread, 0));
     return output;
   }

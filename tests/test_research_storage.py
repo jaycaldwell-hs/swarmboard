@@ -9,7 +9,7 @@ from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from swarmboard.database import init_db, make_engine, make_session_factory
-from swarmboard.models import Event, Run, Turn, TurnState, utc_now
+from swarmboard.models import Agent, Event, Run, Turn, TurnState, utc_now
 from swarmboard.repository import InvalidStateError, Repository
 from swarmboard.run_policy import normalize_config
 
@@ -201,3 +201,35 @@ def test_repeatable_legacy_upgrade_preserves_events_and_raw_output(store) -> Non
                 assert turn.outcome == expected_outcome
                 assert turn.rejection_reason == error
                 assert turn.raw_output == raw
+
+
+def test_repeatable_agent_persona_version_upgrade_preserves_settings_and_events(store) -> None:
+    engine, factory = store
+    versions = [7, 0, -1, True, "8", 2.5, None, 2**64]
+    with factory.begin() as session:
+        repo = Repository(session)
+        agents = [repo.create_agent(handle=f"version-{index}", persona="Original persona", model="test",
+                                   settings={"persona_version": version, "retained": index})
+                  for index, version in enumerate(versions)]
+        assert all(agent.persona_version == 1 for agent in agents)
+        agent_ids = [agent.id for agent in agents]
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE agents DROP COLUMN persona_version")
+        original_settings = list(connection.exec_driver_sql("SELECT id, settings FROM agents ORDER BY id"))
+        original_events = list(connection.exec_driver_sql("SELECT * FROM events ORDER BY id"))
+        original_triggers = list(connection.exec_driver_sql(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+        ))
+    init_db(engine)
+    with factory.begin() as session:
+        assert [session.get_one(Agent, agent_id).persona_version for agent_id in agent_ids] == [7, 1, 1, 1, 1, 1, 1, 1]
+        session.get_one(Agent, agent_ids[0]).persona_version = 9
+    init_db(engine)
+    with factory() as session:
+        assert session.get_one(Agent, agent_ids[0]).persona_version == 9
+    with engine.connect() as connection:
+        assert list(connection.exec_driver_sql("SELECT id, settings FROM agents ORDER BY id")) == original_settings
+        assert list(connection.exec_driver_sql("SELECT * FROM events ORDER BY id")) == original_events
+        assert list(connection.exec_driver_sql(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+        )) == original_triggers

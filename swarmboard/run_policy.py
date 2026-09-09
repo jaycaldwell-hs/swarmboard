@@ -108,6 +108,7 @@ def adapt_agent(run, agent):
     view = SimpleNamespace(**{key: copy.deepcopy(getattr(agent, key)) for key in (
         "id", "handle", "role", "persona", "provider", "model", "enabled", "settings",
         "permissions", "cooldown_seconds", "last_spoke_at",
+        "persona_version",
     ) if hasattr(agent, key)})
     policy = policy_for(run)
     if not policy["cooldowns"]:

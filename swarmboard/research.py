@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from . import cadence, sessions
 from .credentials import scrub_agent_settings
+from .context_views import persona_identity
 from .models import Agent, Event, Experiment, Post, Run, Stimulus, Thread, Turn, utc_now
 from .repository import InvalidStateError, Repository
 from .run_policy import normalize_config
@@ -50,13 +51,12 @@ def _roster(repo: Repository, run: Run | None, agent_ids: Sequence[str] | None) 
 
 
 def _participant_snapshot(agent: Agent) -> dict[str, Any]:
-    import hashlib
-
+    identity = persona_identity(agent)
     return {
         "id": agent.id, "handle": agent.handle, "role": agent.role,
         "provider": agent.provider, "model": agent.model,
         "persona": agent.persona,
-        "persona_sha256": hashlib.sha256(agent.persona.encode("utf-8")).hexdigest(),
+        "persona_sha256": identity["sha256"], "persona_version": identity["version"],
         "settings": deepcopy(scrub_agent_settings(agent.settings)[0]),
         "permissions": deepcopy(agent.permissions), "cooldown_seconds": agent.cooldown_seconds,
     }
@@ -130,7 +130,7 @@ def fork(
     overrides = dict(config_overrides or {})
     if overrides.get("session_type", "research") != "research":
         raise InvalidStateError("forks are research sessions")
-    forbidden = set(overrides) & (_RUNTIME_CONFIG | {"agent_ids", "interaction_mode", "collaboration"})
+    forbidden = set(overrides) & (_RUNTIME_CONFIG | {"agent_ids", "interaction_mode", "collaboration", "agent_overrides"})
     if forbidden or any(key.startswith("cadence_") for key in overrides):
         raise InvalidStateError("fork configuration contains reserved fields")
     config.update(deepcopy(overrides))
@@ -174,7 +174,7 @@ def fork(
         "ancestors": [*deepcopy(previous_lineage.get("ancestors", [])), parent],
     }
     config.update(lineage=lineage, source_run_id=parent["run_id"],
-                  fork_roster=[_participant_snapshot(agent) for agent in agents])
+                  fork_roster=[_participant_snapshot(sessions.configured_agent(config, agent)) for agent in agents])
     if sibling_group_id:
         config["sibling_group_id"] = sibling_group_id
     if source_turn_id:

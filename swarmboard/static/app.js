@@ -384,7 +384,7 @@
     const researchBadge = document.getElementById("active-research-badge");
     if (researchBadge) researchBadge.hidden = (run?.session_type || run?.config?.session_type) !== "research";
     const researchNavigation = document.getElementById("research-navigation");
-    if (researchNavigation) researchNavigation.innerHTML = window.SwarmResearch?.navigationHtml(run, store.runs) || "";
+    if (researchNavigation) researchNavigation.innerHTML = window.SwarmResearch?.navigationHtml(run, store.runs, store.threads) || "";
     const runIsOpen = run && ["created", "running", "paused"].includes(normalizedRunState(run.state));
     const terminalRun = run && !runIsOpen;
     const closed = status === "closed";
@@ -484,6 +484,7 @@
               <span class="post-author-line">
                 <strong class="post-author">${escapeHtml(human ? author : `@${stripAt(author)}`)}</strong>
                 <span class="post-author-type">${human ? "human" : "regular"}</span>
+                ${window.SwarmInterventions?.postBadge(post) || ""}
                 ${post.is_inherited || post.metadata?.is_inherited ? '<span class="inherited-badge">Inherited</span>' : ""}
               </span>
               <time class="post-time" datetime="${escapeHtml(post.created_at || "")}" title="${escapeHtml(fullDate(post.created_at))}">${escapeHtml(relativeTime(post.created_at))}</time>
@@ -616,6 +617,7 @@
         </div>
         <div id="run-participant-tools"></div>
         <div id="run-findings"></div>
+        <div id="run-interventions"></div>
       </div>`;
     window.SwarmResearch?.renderPanel(document.getElementById("run-participant-tools"), {
       run, thread: store.selectedThread, threads: store.threads, agents: store.agents,
@@ -627,6 +629,10 @@
       run, thread: store.selectedThread, posts: store.selectedThread.posts || [],
       turns: turnIds.map(id => store.turnDetails.get(id) || {id}),
       onLoaded: findings => { store.findingsByRun.set(run.id, findings); if (currentRun()?.id === run.id) renderEvents(); },
+    });
+    window.SwarmInterventions?.renderPanel(document.getElementById("run-interventions"), {
+      run, thread: store.selectedThread, agents: store.agents,
+      onChanged: () => loadState({threadId: store.selectedThreadId, silent: true}),
     });
   }
 

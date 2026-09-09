@@ -62,6 +62,57 @@ test("fork navigation nests descendants, collapses siblings around selection, an
   assert.match(tools.navigationHtml({...runs[2], thread_id: "a"}, runs), /Sample 2/);
 });
 
+test("resample grouping counts runs and preserves their additional discussions", () => {
+  const tools = helper();
+  const runs = [{id: "base", session_type: "collaboration"},
+    {id: "a", thread_id: "a-extra", session_type: "research", sibling_group_id: "samples", lineage: {parent_thread_id: "original"}},
+    {id: "b", thread_id: "b-extra", session_type: "research", sibling_group_id: "samples", lineage: {parent_thread_id: "original"}}];
+  const threads = [{id: "a-extra", run_id: "a", created_at: "2026-09-09T00:02:00"},
+    {id: "b-extra", run_id: "b", created_at: "2026-09-09T00:03:00"},
+    {id: "b-root", run_id: "b", created_at: "2026-09-09T00:01:00"},
+    {id: "a-root", run_id: "a", created_at: "2026-09-09T00:01:00"},
+    {id: "original", run_id: "base", created_at: "2026-09-09T00:00:00"}];
+  const entries = tools.threadEntries(threads, runs, "a-extra");
+  assert.deepEqual(Array.from(entries, item => item.thread.id), ["original", "a-root", "a-extra", "b-extra"]);
+  assert.equal(entries[1].siblingCount, 2);
+  assert.equal(entries[2].siblingCount, 0);
+  assert.equal(entries[3].siblingCount, 0);
+  const navigation = tools.navigationHtml(runs[1], runs, threads);
+  assert.match(navigation, /#thread=a-root/);
+  assert.match(navigation, /#thread=b-root/);
+  assert.doesNotMatch(navigation, /#thread=a-extra|#thread=b-extra/);
+});
+
+test("participant view displays complete system messages including private instructions and memories", async () => {
+  const elements = new Map();
+  const element = name => {
+    if (!elements.has(name)) elements.set(name, {listeners: {}, disabled: false, addEventListener(name, callback) { this.listeners[name] = callback; }});
+    return elements.get(name);
+  };
+  const form = element("form");
+  form.querySelector = element;
+  const root = {innerHTML: "", querySelector: element};
+  let modal;
+  const tools = helper({
+    document: {addEventListener() {}, body: {appendChild() {}}, createElement() {
+      modal = {innerHTML: "", querySelector: element, querySelectorAll: () => [], addEventListener() {}, showModal() {}};
+      return modal;
+    }},
+    FormData: class {get(name) { return {agent_id: "ada", thread_id: "thread"}[name] || ""; }},
+    fetch: async () => ({ok: true, json: async () => ({prompt_sha256: "captured-hash", messages: [
+      {role: "system", content: "Private instruction: inspect the assumption. Seeded memory: prior observation."},
+      {role: "user", content: "Public discussion"},
+    ]})}),
+  });
+  tools.renderPanel(root, {run: {id: "run", state: "paused", config: {}},
+    thread: {id: "thread", run_id: "run"}, agents: [{id: "ada", handle: "ada"}]});
+  await element('[data-command="view"]').listeners.click({target: element('[data-command="view"]')});
+  assert.match(modal.innerHTML, /Private instruction: inspect the assumption/);
+  assert.match(modal.innerHTML, /Seeded memory: prior observation/);
+  assert.match(modal.innerHTML, /Public discussion/);
+  assert.match(modal.innerHTML, /captured-hash/);
+});
+
 test("force next uses explicit cooldown override and reuses request key after a lost response", async () => {
   const fields = new Map();
   const element = selector => {

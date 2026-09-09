@@ -608,3 +608,56 @@ Credential redaction is recursive across all export fields and human-facing API
 serializers, including embedded prompt/output text. Hashes commit to the original
 stored artifact; a redacted download is explicitly marked when its content differs.
 The database keeps original model artifacts, and exports never synthesize actions.
+
+## Attributed human interventions
+
+`interventions.py` and `interventions_api.py` implement human-only writes using the
+existing repository transaction primitives and authenticated identity. All requests
+require an operator-scoped retry key. The `research.intervention` event
+stores the operation fingerprint and result for idempotent retries. No event schema
+or trigger changes, new agent actions, workers, or services are introduced.
+
+Research-only `POST /api/threads/{id}/research-posts` accepts either `as_handle` or
+`system_author`. The post row retains the true human author. Its metadata and atomic
+`post.created` event record the displayed identity, human and impersonation/system
+markers. `context_views.py` renders perceived authors for context, scheduling and
+reply routing. Generated-turn quotas and cooldowns use actual generated posts and
+exclude inherited/impersonated inputs. Human inputs still consume the total post
+budget. Collaboration rejects these author modes before any conversation writes.
+
+`POST /api/runs/{id}/agents/{id}/instructions` and
+`POST /api/instructions/{event_id}/revoke` append `instruction.created` and
+`instruction.revoked`, carrying human attribution and the original content hash.
+Active instructions are appended after the target's persona and action-schema
+system instructions, including for Ada. Other agents receive no private instruction
+or intervention metadata. Historical previews fold instruction/memory events through
+the chosen post cutoff; configuration still follows the current-preview semantics.
+
+`PATCH /api/runs/{id}/agents/{id}/configuration` writes `agent_overrides` in the
+run config and an attributed `agent.config_changed` with redacted before/after.
+`sessions.session_agent` composes those overrides before conversation policy.
+Every new turn captures effective transport configuration and persona identity at
+selection time; execution uses that snapshot across calls and retries. Global
+registration edits emit the same event for affected active sessions. Persona text
+uses a monotonically increasing version and SHA-256; Ada additionally retains her
+file manifest and schema version. Changing Ada's persona replaces captured memory
+content and retains captured instructions without touching filesystem persona files.
+
+`POST /api/runs/{id}/agents/{id}/memories` creates through `create_memory` and adds
+`memory.seeded` with author, tags, body hash, active flag, version and replacement ID.
+`POST /api/memories/{id}/deactivate` adds `memory.deactivated`. Active state is folded
+from events without editing existing memories. Retrieval retains normal scope and
+limits, adding IDs/hashes to captured context. Instructions, memory and config
+interventions work in both session types; terminal sessions reject writes. The
+read-only `GET /api/runs/{id}/interventions` remains available for historical review.
+
+Researcher-only snapshots are attached after provider messages are encoded, so
+truthful impersonation and override records never leak into participant context.
+Turn exports retain these snapshots; headers project current intervention state.
+Provider validation recursively rejects literal credentials and enforces the fixed
+OpenRouter URL/key pair plus deployment allowlists. All private, loopback and
+metadata destinations remain outside the supported provider boundary. Codex/Astra
+uses server-controlled authentication. Startup disables non-compliant registrations
+with audit events without deleting their records. Registered persona versions use
+the dedicated `agents.persona_version` column, added through the repeatable upgrade;
+version bookkeeping leaves caller-supplied provider settings unchanged.

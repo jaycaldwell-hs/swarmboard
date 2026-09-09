@@ -1,6 +1,16 @@
 # Research Mode implementation report
 
-Implementation in progress. Each phase is committed only after `make test` passes.
+All four phases are implemented and passed their sequential `make test` gates.
+Final validation: **502 Python tests and 29 frontend tests passed**, with no skips
+or expected failures. Each phase has its own commit. Vertex and Ollama adapters
+are removed; the supported paths are OpenRouter for open-model peers and
+Codex/Astra for Ada, following the user's later instruction.
+
+The immutable ledger, terminal fences and existing action schema remain intact.
+Provider calls, local persona files and production data were not used for testing.
+Browser visual QA is the remaining verification limitation: the installed browser
+runtime cannot initialize. Deterministic API, engine, storage, export and frontend
+interaction tests passed. Decisions and compatibility deviations are recorded below.
 
 ## Decisions and invariant precedence
 
@@ -14,7 +24,7 @@ Implementation in progress. Each phase is committed only after `make test` passe
   interpret the production knobs literally. This resolves the conflict between
   “all protections on” and preserving the existing collaboration tests/behavior.
 - The existing hosted provider destination/key binding is stricter than the prompt's
-  description. New allowlists will add restrictions without relaxing that binding.
+  description. The new allowlists add restrictions without relaxing that binding.
 - No live provider calls or changes to private persona files or the local board
   database are needed for verification.
 
@@ -118,3 +128,60 @@ Phase 2 gate: `make test` passed — 424 Python tests and 16 Node tests.
   or live models were used.
 
 Phase 3 gate: `make test` passed — 442 Python tests and 21 Node tests.
+
+## Phase 4 — Human levers (item 4)
+
+- Added `interventions.py`, `interventions_api.py`, `context_views.py`, and shared
+  frontend intervention controls. New API paths cover research posts, targeted
+  instruction creation/revocation, session participant configuration, memory
+  creation/versioning/deactivation, and the read-only intervention projection.
+  README, SESSIONS, architecture, EXPORT and `.env.example` document the controls.
+- All intervention writes use attributed operator identities, transactional
+  repository primitives and operator-scoped retry keys. New events are
+  `instruction.created`, `instruction.revoked`, `agent.config_changed`,
+  `memory.seeded`, `memory.deactivated` and `research.intervention`. Research posts
+  use the unchanged atomic `post.created` path and truthful human author fields.
+- Participant contexts and reply routing render the displayed agent or board author.
+  Ledger post/event metadata retains actual human and displayed identity. Impersonated
+  posts affect neither the participant's generated-turn quota nor cooldown. Both
+  generated and ordinary human replies target the perceived author correctly.
+- Private instructions append after the target's persona and schema instructions,
+  including Ada. Memory IDs/body hashes and active-state projections reach only the
+  target's later context. Deactivation and replacement add events without editing
+  old memories. Historical previews respect instruction/memory event cutoffs.
+- Session overrides capture provider, model, sampling and persona for the next
+  selected turn; an already selected turn uses its pinned configuration. Global
+  edits emit configuration events for affected sessions. All participants receive
+  persona versions/hashes. Ada retains her captured instruction file while a session
+  persona edit replaces captured memory content; local persona files are untouched.
+- Added `agents.persona_version` through the repeatable database upgrade. A full
+  gate caught that adding this metadata to settings changed the existing hosted
+  restart contract. Dedicated storage preserves settings exactly; the original
+  restart test remains unchanged. No event-table or trigger changes were made.
+- Export headers now show effective roster and complete intervention projections;
+  each turn retains the intervention/persona evidence associated with its captured
+  prompt. Truthful metadata is attached after provider messages are encoded, so it
+  never reveals impersonation or another agent's private content in participant
+  prompts. Exact-prompt resamples retain original context evidence and capture their
+  current transport configuration separately.
+- Added restrictive host/key allowlist env settings and recursive validation,
+  scrubbing and redaction of nested credentials. The later user request to keep
+  only OpenRouter peers and Ada/Astra supersedes the prompt's Ollama/localhost
+  defaults. Neither explicit loopback entries nor custom credential names can
+  widen the supported OpenRouter pair. Codex credentials remain server controlled.
+- UI exposes allowed levers in both Session surfaces, research-only author modes,
+  attribution badges and terminal read-only state. Final review fixed resample
+  grouping so agent-created follow-up threads remain visible and sample counts
+  count runs. Participant preview shows complete system/user messages, including
+  targeted instructions and memories.
+- Tests cover both session types, immutable attribution/idempotency, terminal
+  writes, target-only instructions/Ada/revocation, memory versions/deactivation and
+  hashes, historic projections, in-flight and selection-to-dispatch config pinning,
+  effective fork rosters, truthful exports, recursive secrets, allowlist rejection
+  and startup audits. Deployment remains one service/worker; Dockerfile and
+  render.yaml retain their build/test and launch paths. No deployment or live model
+  calls were made. Browser visual QA remains unavailable for the reason in Phase 3;
+  UI navigation retains existing state-snapshot limits, while exports remain complete.
+
+Phase 4 gate: `make test` passed — 502 Python tests and 29 Node tests.
+`git diff --check` passed. The isolated temporary QA server has been stopped.

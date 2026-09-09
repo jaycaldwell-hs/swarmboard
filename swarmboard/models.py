@@ -188,6 +188,7 @@ class Agent(UUIDMixin, TimestampMixin, Base):
 
     handle: Mapped[str] = mapped_column(String(80, collation="NOCASE"), nullable=False)
     persona: Mapped[str] = mapped_column(Text, nullable=False)
+    persona_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     role: Mapped[str] = mapped_column(String(80), nullable=False, default="specialist")
     provider: Mapped[str] = mapped_column(String(80), nullable=False, default="openai_compatible")
     model: Mapped[str] = mapped_column(String(255), nullable=False)

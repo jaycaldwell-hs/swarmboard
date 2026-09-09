@@ -47,7 +47,7 @@
     $("report-policy").hidden = data.session_type !== "research";
     $("report-policy").textContent = data.session_type === "research" ? `Research · ${data.policy?.profile || "production"} policy` : "";
     $("thread-link").href = run?.thread_id ? `/#thread=${encodeURIComponent(run.thread_id)}` : "/";
-    $("session-research-navigation").innerHTML = window.SwarmResearch?.navigationHtml(run, state.runs) || "";
+    $("session-research-navigation").innerHTML = window.SwarmResearch?.navigationHtml(run, state.runs, state.threads || []) || "";
     const thread = state.threads?.find(thread => thread.id === run?.thread_id);
     if (thread) window.SwarmResearch?.renderPanel($("session-participant-tools"), {
       run, thread, threads: state.threads, agents: state.agents, onChange: refresh,
@@ -56,6 +56,10 @@
     window.SwarmFindings?.renderPanel($("session-findings"), {
       run: run || {id: data.run_id}, thread, turns: data.actions,
       onLoaded: findings => { if (selected === data.run_id) { currentFindings = findings; renderActions(); } },
+    });
+    window.SwarmInterventions?.renderPanel($("session-interventions"), {
+      run: run || {id: data.run_id, state: data.state, session_type: data.session_type}, thread,
+      agents: state.agents, onChanged: refresh,
     });
     const rotation = data.cadence;
     $("cadence-note").textContent = rotation
