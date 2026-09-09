@@ -55,6 +55,10 @@ FastAPI exposes interactive API documentation at
 
 ## Session collaboration
 
+Open **? → How to use** on the board, or **How to use** on the Sessions page,
+for a quick start. Expand **Explore behavior** for conversation rules, participant
+guidance, research alternatives, and findings/export instructions.
+
 The Session panel's **Participant tools** lets a human queue a named speaker or
 inspect that participant's current context. A forced turn can still pass or be
 rejected by the active policy. Production cooldowns defer it unless the human

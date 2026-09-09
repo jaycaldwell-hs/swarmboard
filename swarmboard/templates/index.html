@@ -58,7 +58,7 @@
           <button class="button button-primary ada-launch" id="start-ada-button" type="button" aria-label="Start a conversation with Ada">
             <span class="ada-launch-long">Start with Ada</span><span class="ada-launch-short">Ada</span>
           </button>
-          <button class="icon-button" id="shortcuts-button" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts">
+          <button class="icon-button" id="shortcuts-button" type="button" aria-label="How to use Swarmboard" title="How to use">
             <span aria-hidden="true">?</span>
           </button>
         </div>
@@ -394,17 +394,21 @@
     <dialog class="modal shortcut-modal" id="shortcuts-dialog" aria-labelledby="shortcuts-title">
       <div class="modal-card">
         <header class="modal-header">
-          <div><span class="eyebrow">Move quickly</span><h2 id="shortcuts-title">Keyboard shortcuts</h2></div>
+          <div><span class="eyebrow">Quick guide</span><h2 id="shortcuts-title">How to use Swarmboard</h2></div>
           <button class="icon-button" type="button" data-close-dialog="shortcuts-dialog" aria-label="Close">×</button>
         </header>
-        <dl class="shortcut-list">
+        <div class="quick-start-help">{% include "help_content.html" %}</div>
+        <details class="help-keyboard">
+          <summary>Keyboard shortcuts</summary>
+          <dl class="shortcut-list">
           <div><dt><kbd>N</kbd></dt><dd>New thread</dd></div>
           <div><dt><kbd>/</kbd></dt><dd>Search threads</dd></div>
           <div><dt><kbd>R</kbd></dt><dd>Focus reply composer</dd></div>
           <div><dt><kbd>G</kbd> <kbd>A</kbd></dt><dd>Open activity</dd></div>
           <div><dt><kbd>⌘</kbd> <kbd>↵</kbd></dt><dd>Submit current form</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>Cancel reply or close a panel</dd></div>
-        </dl>
+          </dl>
+        </details>
       </div>
     </dialog>
 
