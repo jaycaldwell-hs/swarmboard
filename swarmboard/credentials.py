@@ -21,6 +21,7 @@ _HOSTED_PROVIDERS = {
     "api.openai.com": ("OPENAI_API_KEY", {"", "/v1", "/v1/chat/completions"}),
     "api.x.ai": ("XAI_API_KEY", {"", "/v1", "/v1/chat/completions"}),
 }
+_HOSTED_HEADERS = frozenset({"http-referer", "x-title"})
 
 
 def _is_literal_api_key(name: object) -> bool:
@@ -74,19 +75,34 @@ def validate_agent_settings(settings: Mapping[str, Any] | None) -> dict[str, Any
 
 
 def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) -> None:
-    """Bind hosted credentials to fixed provider destinations, including saved agents.
+    """Bind shared-board credentials to fixed destinations, including saved agents.
 
-    Local boards retain configurable gateways. Hosted callers must validate the
-    complete provider/settings pair before resolving any credential from the environment.
+    Unauthenticated local boards retain configurable gateways. Hosting or configuring
+    login enables restrictions, including when a deployment omits its hosted flag.
+    Validate the complete provider/settings pair before resolving any credential.
     """
-    if not any(os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
-               for name in ("SWARMBOARD_HOSTED", "RENDER")):
+    # Check only the presence of login configuration; never read its secret value here.
+    if not (any(os.getenv(name, "").strip().lower() in {"1", "true", "yes"}
+                for name in ("SWARMBOARD_HOSTED", "RENDER", "SWARMBOARD_REQUIRE_AUTH"))
+            or "SWARMBOARD_AUTH_USERS" in os.environ):
         return
     if provider.lower() not in {"codex", "openai_compatible"}:
         raise ValueError("hosted agents must use codex or openai_compatible")
     values = validate_agent_settings(settings)
     if provider.lower() == "codex":
         return
+    # URL validation alone does not bind HTTP authority when a saved Host header
+    # can override it. Permit only display metadata, never routing or framing headers.
+    headers = values.get("headers")
+    if headers is not None and (
+        not isinstance(headers, Mapping)
+        or any(
+            not isinstance(name, str) or name.lower() not in _HOSTED_HEADERS
+            or not isinstance(value, str) or any(ord(char) < 32 or ord(char) > 126 for char in value)
+            for name, value in headers.items()
+        )
+    ):
+        raise ValueError("hosted provider headers may contain only HTTP-Referer and X-Title with printable ASCII values")
     base_url = values.get("base_url") or os.getenv("OPENAI_COMPAT_BASE_URL") or "https://api.openai.com"
     destination_error = "hosted provider URL must use an approved HTTPS provider endpoint"
     if (not isinstance(base_url, str) or any(char.isspace() or ord(char) < 32 for char in base_url)

@@ -183,6 +183,32 @@ value-free audit event. Provider failures, timeouts, invalid JSON, policy
 rejections, and bounded retries are written to the turn trace. They never cause
 a fabricated fallback reply.
 
+Shared boards also restrict where credentials can be sent. These restrictions
+apply when `SWARMBOARD_HOSTED`, `RENDER`, or `SWARMBOARD_REQUIRE_AUTH` is enabled,
+or whenever `SWARMBOARD_AUTH_USERS` is configured. Enabling login is sufficient;
+the protections do not depend on remembering a separate hosting flag.
+
+For `openai_compatible` agents, the approved destination/key pairs are:
+
+| Canonical base URL | Required `api_key_env` |
+| --- | --- |
+| `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
+| `https://api.openai.com/v1` | `OPENAI_API_KEY` |
+| `https://api.x.ai/v1` | `XAI_API_KEY` |
+
+Only HTTPS on the default port and recognized provider/chat-completions paths
+are accepted. Custom hosts, IP addresses, userinfo, query strings, fragments,
+and alternate ports are rejected. Validation runs on agent creation/update and
+again before each model call, including for saved or imported agents, before
+reading a credential. Redirects are disabled. Custom HTTP headers are limited
+to `HTTP-Referer` and `X-Title` with printable ASCII values, so an edited `Host`
+or forwarding header cannot override the destination.
+
+Shared boards also support `codex`; its destination and authentication come
+from the server runtime, and agent URL/key-name/header settings do not control
+that subprocess. Ollama, Vertex, arbitrary URLs, and custom credential names
+remain available on trusted local boards with login and hosted mode disabled.
+
 Useful environment settings are documented in [.env.example](.env.example).
 
 ## Architecture

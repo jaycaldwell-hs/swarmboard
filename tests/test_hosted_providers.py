@@ -11,7 +11,7 @@ from swarmboard.gateways import GatewayError, ModelGateway, OpenAICompatibleGate
 
 @pytest.fixture(autouse=True)
 def isolated_hosted_env(monkeypatch):
-    for name in ("SWARMBOARD_HOSTED", "RENDER", "OPENAI_COMPAT_BASE_URL"):
+    for name in ("SWARMBOARD_HOSTED", "RENDER", "SWARMBOARD_REQUIRE_AUTH", "SWARMBOARD_AUTH_USERS", "OPENAI_COMPAT_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -26,7 +26,10 @@ def test_hosted_allows_only_expected_provider_paths(monkeypatch, host, prefix, k
     validate_hosted_provider("openai_compatible", {"base_url": f"https://{host}{prefix}{suffix}", "api_key_env": key})
 
 
-@pytest.mark.parametrize("flag,value", [("SWARMBOARD_HOSTED", "1"), ("RENDER", "true")])
+@pytest.mark.parametrize("flag,value", [
+    ("SWARMBOARD_HOSTED", "1"), ("RENDER", "true"),
+    ("SWARMBOARD_REQUIRE_AUTH", "1"), ("SWARMBOARD_AUTH_USERS", '{"researcher":"test-password"}'),
+])
 def test_hosted_activation_and_normalized_default_tls_origin(monkeypatch, flag, value):
     monkeypatch.setenv(flag, value)
     validate_hosted_provider("codex", {})
@@ -37,6 +40,8 @@ def test_hosted_activation_and_normalized_default_tls_origin(monkeypatch, flag, 
 
 @pytest.mark.parametrize("base_url", [
     "https://attacker.test/v1", "http://api.openai.com/v1", "https://api.openai.com:8443/v1",
+    "http://127.0.0.1/v1", "http://localhost/v1", "http://10.0.0.1/v1",
+    "http://169.254.169.254/latest/meta-data", "http://[::1]/v1", "http://[fd00::1]/v1",
     "https://api.openai.com.:443/v1", "https://api.openai.com.attacker.test/v1",
     "https://api.openai.com@attacker.test/v1", "https://attacker@api.openai.com/v1",
     "https://api.openai.com/v1?secret=1", "https://api.openai.com/v1?", "https://api.openai.com/v1#",
@@ -57,7 +62,7 @@ async def test_imported_bad_provider_urls_fail_before_any_client_creation(monkey
     assert exc.value.category == "configuration" and not exc.value.retryable
 
 
-@pytest.mark.parametrize("key", ["SWARMBOARD_AUTH_USERS", "SWARMBOARD_PERSONA_BUNDLE_B64", "RENDER_API_KEY",
+@pytest.mark.parametrize("key", ["SWARMBOARD_AUTH_USERS", "SWARMBOARD_PERSONA_BUNDLE_B64", "RENDER_API_KEY", "SWARMBOARD_CODEX_API_KEY",
                                  "OPENROUTER_API_KEY", "XAI_API_KEY", "CUSTOM_API_KEY", "", None])
 @pytest.mark.asyncio
 async def test_arbitrary_secret_names_fail_before_environment_resolution(monkeypatch, key):
@@ -118,6 +123,60 @@ async def test_local_custom_provider_and_environment_name_still_work(monkeypatch
     validate_hosted_provider("ollama", {"base_url": "http://localhost:11434"})
 
 
+@pytest.mark.parametrize("auth_flag", ["SWARMBOARD_REQUIRE_AUTH", "SWARMBOARD_AUTH_USERS"])
+@pytest.mark.asyncio
+async def test_authenticated_gateway_rejects_arbitrary_secret_before_reading_it(monkeypatch, auth_flag):
+    import os
+
+    monkeypatch.setenv(auth_flag, "1" if auth_flag == "SWARMBOARD_REQUIRE_AUTH" else '{"researcher":"test-password"}')
+    # Explicitly disabling hosted flags must not weaken a board with login configured.
+    monkeypatch.setenv("SWARMBOARD_HOSTED", "0")
+    monkeypatch.setenv("RENDER", "false")
+    original_getenv = os.getenv
+
+    def guarded_getenv(name, default=None):
+        if name == "SWARMBOARD_AUTH_USERS":
+            pytest.fail("login credentials were read by the gateway")
+        return original_getenv(name, default)
+
+    monkeypatch.setattr("swarmboard.gateways.os.getenv", guarded_getenv)
+    monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
+    agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
+        "base_url": "https://api.openai.com/v1", "api_key_env": "SWARMBOARD_AUTH_USERS",
+    })
+    with pytest.raises(GatewayError, match="matching API key environment variable"):
+        await ModelGateway().complete(agent, [])
+
+
+@pytest.mark.parametrize("headers", [
+    {"Host": "attacker.test"}, {"hOsT": "127.0.0.1"}, {":authority": "attacker.test"},
+    {"X-Forwarded-Host": "attacker.test"}, {"Forwarded": "host=attacker.test"},
+    {"Content-Length": "0"}, {"Transfer-Encoding": "chunked"},
+    {"HTTP-Referer": "https://board.test\r\nHost: attacker.test"}, {"X-Title": 123},
+    "Host: attacker.test", [["Host", "attacker.test"]],
+])
+@pytest.mark.asyncio
+async def test_hosted_rejects_header_overrides_before_resolving_credentials(monkeypatch, headers):
+    import os
+
+    monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
+    original_getenv = os.getenv
+
+    def guarded_getenv(name, default=None):
+        if name == "OPENAI_API_KEY":
+            pytest.fail("credential was read before validating headers")
+        return original_getenv(name, default)
+
+    monkeypatch.setattr("swarmboard.gateways.os.getenv", guarded_getenv)
+    monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("network client was created"))
+    agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
+        "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "headers": headers,
+    })
+    with pytest.raises(GatewayError, match="provider headers") as exc:
+        await ModelGateway().complete(agent, [])
+    assert exc.value.category == "configuration" and not exc.value.retryable
+
+
 @pytest.mark.asyncio
 async def test_hosted_allowed_request_uses_expected_key_without_following_redirect(monkeypatch):
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
@@ -136,21 +195,26 @@ async def test_hosted_allowed_request_uses_expected_key_without_following_redire
     monkeypatch.setattr(OpenAICompatibleGateway, "__init__", init_with_transport)
     agent = SimpleNamespace(provider="openai_compatible", model="test", settings={
         "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY",
+        "headers": {"HTTP-Referer": "https://board.test", "x-title": "Swarmboard"},
     })
     with pytest.raises(GatewayError):
         await ModelGateway().complete(agent, [{"role": "user", "content": "Test request."}])
     assert len(requests) == 1
     assert str(requests[0].url) == "https://api.openai.com/v1/chat/completions"
+    assert requests[0].headers["Host"] == "api.openai.com"
     assert requests[0].headers["Authorization"] == "Bearer hosted-test-key"
+    assert requests[0].headers["HTTP-Referer"] == "https://board.test"
+    assert requests[0].headers["X-Title"] == "Swarmboard"
 
 
+@pytest.mark.parametrize("hosted", [False, True])
 @pytest.mark.asyncio
-async def test_hosted_agent_api_rejects_unsafe_creation_and_effective_partial_updates(tmp_path, monkeypatch):
+async def test_hosted_agent_api_rejects_unsafe_creation_and_effective_partial_updates(tmp_path, monkeypatch, hosted):
     from swarmboard.app import create_app
     from .test_engine_acceptance import ScriptedGateway
 
     monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
-    monkeypatch.setenv("SWARMBOARD_HOSTED", "1")
+    monkeypatch.setenv("SWARMBOARD_HOSTED", "1" if hosted else "0")
     monkeypatch.setenv("SWARMBOARD_AUTH_USERS", '{"researcher":"test-password"}')
     gateway = ScriptedGateway()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'provider-api.db'}", gateway=gateway)
@@ -163,7 +227,11 @@ async def test_hosted_agent_api_rejects_unsafe_creation_and_effective_partial_up
                        "persona": "Test participant.", "settings": allowed}
             bad_settings = [
                 {**allowed, "base_url": "https://attacker.test/v1"},
+                {**allowed, "base_url": "http://10.0.0.1/v1"},
                 {**allowed, "api_key_env": "SWARMBOARD_AUTH_USERS"},
+                {**allowed, "api_key_env": "SWARMBOARD_CODEX_API_KEY"},
+                {**allowed, "headers": {"Host": "attacker.test"}},
+                {**allowed, "headers": {"X-Forwarded-Host": "attacker.test"}},
             ]
             for settings in bad_settings:
                 response = await client.post("/api/agents", json={**payload, "settings": settings})

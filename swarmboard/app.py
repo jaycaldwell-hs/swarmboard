@@ -442,9 +442,19 @@ def create_app(
 
     # Import here so test callers can build the schema and inject a gateway at
     # the single provider boundary without any production fake implementation.
-    from .engine import SwarmEngine
+    from .engine import EngineConfig, SwarmEngine
 
-    swarm = SwarmEngine(session_factory=factory, gateway=gateway, publish=publish)
+    swarm = SwarmEngine(
+        session_factory=factory,
+        gateway=gateway,
+        publish=publish,
+        config=EngineConfig(
+            idle_seconds=settings.idle_seconds,
+            dormant_seconds=settings.dormant_seconds,
+            poll_seconds=settings.scheduler_poll_seconds,
+            context_post_limit=settings.context_post_limit,
+        ),
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:

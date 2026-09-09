@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -9,10 +10,37 @@ from sqlalchemy import select
 from swarmboard.app import create_app
 from swarmboard.database import init_db, make_engine, make_session_factory
 from swarmboard.gateways import AgentAction
-from swarmboard.models import Agent, Event, RunState, Stimulus, StimulusKind, Thread, ThreadStatus
+from swarmboard.models import Agent, Event, RunState, Stimulus, StimulusKind, Thread, ThreadStatus, utc_now
 from swarmboard.repository import Repository
 
 from .test_engine_acceptance import ScriptedGateway
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quiet_seconds,expected_status,expected_stimuli", [
+    (4, "active", []), (8, "active", ["idle_revisit"]), (20, "dormant", []),
+])
+async def test_app_uses_configured_idle_and_dormancy_thresholds(
+    tmp_path, monkeypatch, quiet_seconds, expected_status, expected_stimuli,
+):
+    monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
+    monkeypatch.setenv("SWARMBOARD_IDLE_SECONDS", "7")
+    monkeypatch.setenv("SWARMBOARD_DORMANT_SECONDS", "15")
+    gateway = ScriptedGateway()
+    app = create_app(database_url=f"sqlite:///{tmp_path / 'timing.db'}", gateway=gateway)
+    async with app.router.lifespan_context(app):
+        with app.state.session_factory.begin() as session:
+            repo = Repository(session)
+            run = repo.create_run(state=RunState.RUNNING, continuous=False)
+            thread = repo.create_thread(title="A quiet discussion", run_id=run.id)
+            thread.latest_activity_at = utc_now() - timedelta(seconds=quiet_seconds)
+            run_id, thread_id = run.id, thread.id
+        await app.state.engine._idle_maintenance(run_id)
+        with app.state.session_factory() as session:
+            repo = Repository(session)
+            assert repo.get_thread(thread_id).status == expected_status
+            assert [item.kind for item in repo.list_stimuli(run_id=run_id)] == expected_stimuli
+    assert gateway.calls == []
 
 
 @pytest.mark.asyncio

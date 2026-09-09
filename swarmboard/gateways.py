@@ -374,6 +374,7 @@ class OpenAICompatibleGateway:
                 timeout=self.timeout_seconds,
                 headers=self.headers,
                 transport=self.transport,
+                follow_redirects=False,
             ) as client:
                 response = await client.post(self.endpoint, json=request_body)
         except httpx.TimeoutException as exc:

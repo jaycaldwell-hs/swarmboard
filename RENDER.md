@@ -59,10 +59,15 @@ Authenticated browser mutations require the same origin. Responses prohibit
 framing and shared caching. Render terminates HTTPS and the container trusts its
 forwarded proxy headers.
 
-`SWARMBOARD_REQUIRE_AUTH=1` fails startup when accounts are absent. Hosted provider
-credentials are restricted to the corresponding OpenAI, OpenRouter, and xAI
-HTTPS endpoints. Arbitrary model URLs and other environment-secret names are
-rejected in hosted mode. Local mode retains custom provider flexibility.
+`SWARMBOARD_REQUIRE_AUTH=1` fails startup when accounts are absent. Configuring
+login also enables the provider destination restrictions, even outside Render
+or without `SWARMBOARD_HOSTED`. Credentials are bound to the corresponding
+OpenAI, OpenRouter, and xAI HTTPS endpoints. Agent writes and every live dispatch
+reject arbitrary URLs, private-network destinations, and other environment-secret
+names before resolving a key. Redirects are disabled; custom HTTP headers are
+limited to `HTTP-Referer` and `X-Title`, preventing `Host` or forwarding overrides.
+The exact destination/key pairs are in [Provider configuration](README.md#provider-configuration).
+Trusted local boards without login or hosted mode retain custom gateways.
 
 `SWARMBOARD_CODEX_AUTH=api_key` resolves `SWARMBOARD_CODEX_API_KEY` if set, otherwise
 `OPENAI_API_KEY`. Only the Codex child receives it as `CODEX_API_KEY`; unrelated

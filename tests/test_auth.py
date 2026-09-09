@@ -255,6 +255,7 @@ async def test_successful_mutations_have_separate_attributed_action_events(authe
             created_agent = await mutate("POST", "/api/agents", "/api/agents", body={
                 "handle": "audit_peer", "persona": "Private body marker: do-not-copy-to-action-audit",
                 "provider": "openai_compatible", "model": "test-model",
+                "settings": {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"},
             })
             await mutate("PATCH", f"/api/agents/{created_agent['id']}", "/api/agents/{agent_id}",
                          username="observer", body={"cooldown_seconds": 5})
