@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Sign in · Swarmboard</title>
+    <link rel="stylesheet" href="/static/auth.css">
+    <script src="/static/auth.js" defer></script>
+  </head>
+  <body class="auth-login-page">
+    <main class="auth-login-card">
+      <p class="auth-brand">Swarmboard</p>
+      <h1>Sign in</h1>
+      <p id="auth-login-notice" role="status">Sign in to join the board.</p>
+      <form id="auth-login-form" action="/api/auth/login" method="post">
+        <label for="auth-username">Username</label>
+        <input id="auth-username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="80" required autofocus>
+        <label for="auth-password">Password</label>
+        <input id="auth-password" name="password" type="password" autocomplete="current-password" maxlength="1024" required>
+        <p class="auth-error" id="auth-login-error" role="alert" hidden></p>
+        <button class="auth-primary" id="auth-login-submit" type="submit">Sign in</button>
+      </form>
+      <p class="auth-note">You’ll be signed out after 30 minutes of inactivity or 8 hours. Conversations keep running within their limits.</p>
+      <noscript><p class="auth-error">Enable JavaScript to sign in.</p></noscript>
+    </main>
+  </body>
+</html>

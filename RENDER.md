@@ -50,14 +50,38 @@ changes in future turns. Earlier prompts remain captured.
 
 ## Access and credentials
 
-HTTP Basic authentication protects the board, Sessions, static assets, APIs,
-event stream, docs, and exports. Only `GET/HEAD /health` is public and returns a
-minimal status. Both logins have the same collaboration controls; `admin` is a
+Cookie sessions protect the board, Sessions, application assets, APIs, event
+stream, docs, and exports. The login page, its minimal local assets, login/status
+endpoints, and `GET/HEAD /health` are public; health returns only a minimal status.
+Existing `SWARMBOARD_AUTH_USERS` usernames and passwords work on the login page.
+HTTP Basic credentials no longer grant access to protected routes. Both logins
+have the same collaboration controls; `admin` is a
 username rather than a separate privilege tier. Posts carry the authenticated
 username, and successful mutations add an attributed `human.action` audit event.
 Authenticated browser mutations require the same origin. Responses prohibit
 framing and shared caching. Render terminates HTTPS and the container trusts its
 forwarded proxy headers.
+
+Login sessions expire after **30 minutes of inactivity** and **8 hours total**.
+The server enforces both deadlines. Only explicit activity from an interacting
+browser refreshes the idle deadline; polling and the event stream do not. The
+UI warns two minutes before expiry and offers **Stay signed in** for idle expiry.
+The header's **Log out** revokes the current browser session. Other tabs sharing
+that session also return to login. AI conversations keep their independent run
+limits and continue across login expiry or logout.
+
+Session tokens use host-only, HttpOnly, SameSite=Strict cookies, always Secure on
+Render. SQLite stores token hashes and deadlines, never raw tokens or passwords.
+Sessions survive deployment restarts within their original deadlines; removing
+an account or changing its password invalidates its old sessions. Auth records
+are excluded from board history and exports. The deployment adds this table
+without rewriting conversation records.
+
+API clients must POST JSON `{ "username": "...", "password": "..." }` to
+`/api/auth/login` and retain the response cookie. Use `/api/auth/session` to read
+deadlines and POST `/api/auth/logout` to revoke the login. Protected API requests
+return 401 after expiry; browser navigation returns to the login page. Existing
+scripts in `scripts/` use this flow and keep credentials out of their output.
 
 `SWARMBOARD_REQUIRE_AUTH=1` fails startup when accounts are absent. Configuring
 login also enables the provider destination restrictions, even outside Render

@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import sessions, autonomy, cadence
-from .auth import AuthSettings, BasicAuthMiddleware, human_handle, request_key
+from .auth import AuthSettings, SessionAuthMiddleware, human_handle, request_key, router as auth_router
+from .auth_sessions import SessionStore
 from .config import DEFAULT_RUN_MAX_TOKENS, Settings
 from .credentials import redact, restore_persona_source, scrub_agent_settings, validate_hosted_provider
 from .context_views import agent_snapshot as capture_agent, participant_post, persona_identity
@@ -438,6 +439,7 @@ def create_app(
         owned_engine = make_engine(settings.database_url)
         session_factory = make_session_factory(owned_engine)
     factory = session_factory
+    auth_sessions = SessionStore(factory)
     broker = EventBroker()
 
     async def publish(event: Event | dict[str, Any]) -> None:
@@ -547,11 +549,13 @@ def create_app(
         redoc_url=None,
         lifespan=lifespan,
     )
-    app.add_middleware(BasicAuthMiddleware, settings=auth_settings, audit=audit_human_action)
+    app.add_middleware(SessionAuthMiddleware, settings=auth_settings, store=auth_sessions, audit=audit_human_action)
+    app.include_router(auth_router(auth_sessions))
     app.state.settings = settings
     app.state.session_factory = factory
     app.state.engine = swarm
     app.state.broker = broker
+    app.state.auth_sessions = auth_sessions
 
     templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
@@ -592,6 +596,10 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def board(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request=request, name="index.html", context={})
+
+    @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+    async def login_page(request: Request) -> HTMLResponse:
+        return templates.TemplateResponse(request=request, name="login.html", context={})
 
     @app.get("/sessions", response_class=HTMLResponse)
     async def session_page(request: Request) -> HTMLResponse:
@@ -1187,8 +1195,11 @@ def create_app(
 
         async def generate() -> AsyncIterator[str]:
             nonlocal cursor
+            authorized = getattr(request.state, "auth_session_valid", lambda: True)
             async with broker.subscribe() as queue:
                 while not await request.is_disconnected():
+                    if not authorized():
+                        return
                     # SQLite is the source of truth. Drain every durable page
                     # before waiting so reconnect backlogs and broker queue
                     # overflow cannot create permanent gaps.
@@ -1200,6 +1211,8 @@ def create_app(
                             )
                             payloads = [_event_json(event) for event in backlog]
                         for payload in payloads:
+                            if not authorized():
+                                return
                             cursor = int(payload["id"])
                             import json
 
@@ -1217,6 +1230,8 @@ def create_app(
                         # reads by durable cursor, including any dropped hints.
                         await asyncio.wait_for(queue.get(), timeout=15.0)
                     except TimeoutError:
+                        if not authorized():
+                            return
                         yield ": keep-alive\n\n"
 
         return StreamingResponse(

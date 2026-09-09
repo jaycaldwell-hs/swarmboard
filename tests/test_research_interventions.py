@@ -316,6 +316,7 @@ def test_terminal_sessions_reject_new_interventions_while_reads_remain_available
 
 @pytest.mark.asyncio
 async def test_authenticated_intervention_routes_attribute_operator_and_scope_request_keys(tmp_path, monkeypatch):
+    from .auth_helpers import login
     monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
     monkeypatch.setenv("SWARMBOARD_AUTH_USERS", '{"alice":"alice-password","bob":"bob-password"}')
     app = create_app(database_url=f"sqlite:///{tmp_path / 'intervention-auth.db'}", gateway=ScriptedGateway())
@@ -328,15 +329,18 @@ async def test_authenticated_intervention_routes_attribute_operator_and_scope_re
             payload = {"body": "Keep the attribution", "idempotency_key": "same-client-key"}
             anonymous = await client.post(path, json=payload)
             assert anonymous.status_code == 401
-            first = await client.post(path, json=payload, auth=("alice", "alice-password"))
+            await login(client, "alice", "alice-password")
+            first = await client.post(path, json=payload)
             assert first.status_code == 201, first.text
             assert first.json()["author"] == "alice"
-            retried = await client.post(path, json=payload, auth=("alice", "alice-password"))
+            retried = await client.post(path, json=payload)
             assert retried.json() == first.json()
-            other = await client.post(path, json=payload, auth=("bob", "bob-password"))
+            await login(client, "bob", "bob-password")
+            other = await client.post(path, json=payload)
             assert other.status_code == 201 and other.json()["author"] == "bob"
             assert other.json()["id"] != first.json()["id"]
-            conflict = await client.post(path, json={**payload, "body": "different content"}, auth=("alice", "alice-password"))
+            await login(client, "alice", "alice-password")
+            conflict = await client.post(path, json={**payload, "body": "different content"})
             assert conflict.status_code == 409
-            projected = await client.get(f"/api/runs/{run_id}/interventions", auth=("alice", "alice-password"))
+            projected = await client.get(f"/api/runs/{run_id}/interventions")
             assert {instruction["author"] for instruction in projected.json()["instructions"]} == {"alice", "bob"}

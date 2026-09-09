@@ -15,6 +15,7 @@ from swarmboard.app import create_app
 from swarmboard.models import Event, Turn
 from swarmboard.repository import InvalidStateError, NotFoundError, Repository, RepositoryError
 from .test_engine_acceptance import ScriptedGateway
+from .auth_helpers import login
 
 
 SERVER_KEY = "planted-server-key-9ba129e64a"
@@ -47,8 +48,8 @@ async def secured_client(tmp_path, monkeypatch):
         raise errors[kind]("Operation failed: " + SERVER_KEY)
 
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test",
-                                    auth=("collaborator", LOGIN_PASSWORD)) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as client:
+            await login(client, "collaborator", LOGIN_PASSWORD)
             yield app, client
 
 

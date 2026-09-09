@@ -1,0 +1,39 @@
+[data-auth-controls][hidden], .auth-warning[hidden], .auth-error[hidden], .auth-warning button[hidden] { display: none !important; }
+.auth-checking body { visibility: hidden; }
+.auth-locked body > :not(.auth-lock-screen) { display: none !important; }
+.auth-locked body { visibility: visible; }
+.auth-controls { display: flex; flex: 0 0 auto; align-items: center; }
+.auth-logout { min-height: 36px; padding: 0 9px; border: 1px solid #bfc3b6; border-radius: 7px; background: transparent; color: #34392f; font: 600 12px/1.4 system-ui, sans-serif; white-space: nowrap; cursor: pointer; }
+.auth-logout:hover { background: #e5eadf; color: #253a2e; }
+.auth-controls button:focus-visible, .auth-warning button:focus-visible, .auth-login-card :focus-visible { outline: 2px solid #225740; outline-offset: 3px; }
+.auth-warning { position: fixed; right: 20px; bottom: 20px; z-index: 1000; width: min(390px, calc(100vw - 32px)); padding: 20px; border: 1px solid #8b987d; border-radius: 12px; box-shadow: 0 10px 40px #182b2130; background: #fffef5; color: #242824; font: 14px/1.5 system-ui, sans-serif; }
+.auth-warning h2 { margin: 0 0 10px; font-size: 19px; line-height: 1.3; }
+.auth-warning p { margin: 8px 0; }
+.auth-warning .auth-countdown { font-variant-numeric: tabular-nums; font-weight: 650; }
+.auth-warning-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.auth-warning .auth-primary, .auth-login-card .auth-primary, .auth-lock-screen .auth-primary { padding: 10px 14px; border: 0; border-radius: 7px; background: #225740; color: white; font: 650 14px/1.4 system-ui, sans-serif; cursor: pointer; }
+.auth-warning button:disabled, .auth-login-card button:disabled { opacity: .6; cursor: wait; }
+.auth-note { color: #5a6457; font-size: 13px; line-height: 1.5; }
+.auth-error { color: #902f22; overflow-wrap: anywhere; }
+.auth-login-page { display: grid; min-height: 100dvh; place-items: center; margin: 0; padding: 24px; background: #f1f0e5; color: #242824; font: 16px/1.5 system-ui, sans-serif; }
+.auth-login-card { box-sizing: border-box; width: min(420px, 100%); padding: 30px; border: 1px solid #c5cbbb; border-radius: 14px; background: #fffef8; }
+.auth-login-card h1 { margin: 8px 0 12px; font-size: 30px; line-height: 1.2; }
+.auth-login-card .auth-brand { margin: 0; color: #225740; font-size: 13px; font-weight: 650; letter-spacing: .04em; }
+.auth-login-card label { display: block; margin: 16px 0 6px; font-size: 14px; font-weight: 600; }
+.auth-login-card input { box-sizing: border-box; width: 100%; padding: 11px; border: 1px solid #aeb8a5; border-radius: 6px; background: white; color: #242824; font: inherit; }
+.auth-login-card .auth-primary { width: 100%; margin: 20px 0 8px; }
+.auth-lock-screen { display: block; box-sizing: border-box; max-width: 480px; margin: 15vh auto; padding: 28px; color: #242824; font: 16px/1.5 system-ui, sans-serif; }
+.auth-status-screen { position: fixed; inset: 0; z-index: 1100; display: grid; align-content: center; justify-items: center; padding: 24px; background: #f1f0e5; color: #242824; font: 16px/1.5 system-ui, sans-serif; visibility: visible; }
+.auth-status-screen p { max-width: 420px; text-align: center; }
+.auth-status-screen button { padding: 10px 14px; border: 0; border-radius: 7px; background: #225740; color: white; font: inherit; cursor: pointer; }
+body > header > #connection { margin-left: auto; }
+
+@media (max-width: 760px) {
+  :root { --topbar-height: 98px; }
+  .topbar { flex-wrap: wrap; align-content: center; row-gap: 5px; }
+  .topbar .brand { margin-right: auto; }
+  .topbar-actions { flex-basis: 100%; justify-content: flex-end; margin-left: 0; gap: 6px; }
+  .topbar-actions > a[href="/sessions"] { padding: 0 8px; min-height: 34px; font-size: 11px; }
+  .topbar-actions .auth-logout { min-height: 34px; padding: 0 7px; font-size: 11px; }
+  .auth-warning { right: 16px; bottom: 16px; }
+}

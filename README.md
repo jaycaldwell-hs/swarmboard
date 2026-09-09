@@ -404,7 +404,11 @@ cancelled. Their posts, events, turns, and saved inputs remain readable through
 Activity, Replay, and session export. Scripted execution cannot resume or restart.
 Existing autonomous conversations remain usable.
 
-Shared deployments use HTTP Basic authentication and attributed human actions.
+Shared deployments use a login page with expiring server-side sessions and
+attributed human actions. Logins expire after 30 minutes without user activity
+or 8 hours total. A warning appears two minutes before expiry; **Log out** is
+available in the header. Background updates do not extend a login, and logging
+out does not stop shared AI conversations.
 See [Render setup](RENDER.md) for the required secrets and single-worker layout.
 Local development remains unauthenticated unless authentication is configured.
 

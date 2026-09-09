@@ -21,12 +21,14 @@ def main() -> None:
     args = parser.parse_args()
     users = json.loads(Path("private/accounts.json").read_text())
     saved = Path("private/live-runtime-smoke.json")
-    with httpx.Client(base_url=args.url.rstrip("/"), auth=("admin", users["admin"]), timeout=210) as client:
+    with httpx.Client(base_url=args.url.rstrip("/"), timeout=210) as client:
         def request(method, path, **kwargs):
             response = client.request(method, path, **kwargs)
             if not response.is_success:
                 raise RuntimeError(f"{method} {path}: HTTP {response.status_code}")
             return response.json()
+
+        request("POST", "/api/auth/login", json={"username": "admin", "password": users["admin"]})
 
         if args.verify_existing:
             record = json.loads(saved.read_text())
@@ -52,8 +54,8 @@ def main() -> None:
                 stop = client.post(f"/api/runs/{record['run_id']}/stop")
                 if stop.status_code not in (200, 409):
                     raise RuntimeError(f"Stopping smoke session: HTTP {stop.status_code}")
-            request("POST", f"/api/threads/{record['thread_id']}/posts",
-                    auth=("cat", users["cat"]), json={
+            request("POST", "/api/auth/login", json={"username": "cat", "password": users["cat"]})
+            request("POST", f"/api/threads/{record['thread_id']}/posts", json={
                         "body": "Deployment smoke test: cat account can contribute to the shared session.",
                         "idempotency_key": "render-smoke-cat-" + record["run_id"],
                     })
@@ -81,6 +83,7 @@ def main() -> None:
                           "auth_mode": metadata["auth_mode"], "codex_version": metadata["configured_cli_version"],
                           "both_human_authors_exported": True, "raw_persona_in_prompt_exactly_once": True,
                           "exported_posts": len(exported["posts"])}))
+        request("POST", "/api/auth/logout")
 
 
 if __name__ == "__main__":

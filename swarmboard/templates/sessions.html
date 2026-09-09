@@ -6,6 +6,8 @@
   <title>Sessions · Swarmboard</title>
   <link rel="stylesheet" href="/static/sessions.css">
   <link rel="stylesheet" href="/static/research.css">
+  <link rel="stylesheet" href="/static/auth.css">
+  <script src="/static/auth.js" defer></script>
   <script src="/static/research.js" defer></script>
   <script src="/static/findings.js" defer></script>
   <script src="/static/interventions.js" defer></script>
@@ -16,6 +18,7 @@
   <a href="/">← Swarmboard</a>
   <span>Sessions</span>
   <span id="connection" role="status">Connecting…</span>
+  {% include "auth_controls.html" %}
 </header>
 <main>
   <div class="intro">

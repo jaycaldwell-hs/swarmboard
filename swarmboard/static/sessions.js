@@ -12,8 +12,9 @@
     return data;
   }
   async function attempt(fn) {
+    if (window.SwarmAuth?.locked) return;
     $("error").hidden = true;
-    try { await fn(); } catch (error) { $("error").textContent = error.message; $("error").hidden = false; }
+    try { await fn(); } catch (error) { if (!window.SwarmAuth?.locked) { $("error").textContent = error.message; $("error").hidden = false; } }
   }
   function choose(runId) {
     selected = runId;
@@ -23,6 +24,7 @@
 
   async function refresh() {
     state = await api("/api/state");
+    if (window.SwarmAuth?.locked) return;
     $("connection").textContent = "Connected";
     const checked = new Set(new FormData($("session-form")).getAll("agent_ids"));
     $("peers").innerHTML = state.agents.filter(a => a.enabled).map(a =>
@@ -35,6 +37,7 @@
     if (selected) {
       const runId = selected;
       const data = await api(`/api/sessions/${encodeURIComponent(runId)}`);
+      if (window.SwarmAuth?.locked) return;
       if (selected === runId) renderSession(data, runs.find(r => r.id === runId));
     }
   }

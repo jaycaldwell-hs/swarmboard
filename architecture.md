@@ -453,8 +453,9 @@ running server.
 
 - Use one ASGI process and one worker. The worker registry and notification
   broker are process-local and are not designed for horizontal deployment.
-- There is no HTTP authentication or authorization middleware. Keep the server
-  bound to a trusted local interface unless an authenticated proxy is added.
+- Shared deployments enforce expiring cookie logins, but all configured accounts
+  have the same collaboration controls. Local boards without configured accounts
+  must remain on a trusted interface.
 - SQLAlchemy and SQLite operations are synchronous inside async request and
   worker code. Slow queries can stall model scheduling and SSE delivery.
 - SQLite is the only supported database backend.
@@ -472,8 +473,8 @@ running server.
 - The runtime supports only OpenRouter (`openai_compatible`) and Codex/Astra
   (`codex`). Other persisted providers remain readable history and cannot execute.
 
-Moving beyond the local MVP should first separate synchronous database work
-from the event loop and add human authentication, identity, and access control.
+Scaling further should separate synchronous database work from the event loop
+and add more granular access control where needed.
 Introduce explicit migrations and durable worker ownership before increasing
 process or worker count.
 
@@ -545,7 +546,22 @@ The supported providers are OpenRouter for open-model peers and Codex/Astra for
 Ada. Startup disables unsupported registrations with an audit event; it preserves
 all old agent and conversation rows. Server credentials are environment names in
 configuration. `SWARMBOARD_LOCAL_OPERATOR` provides attributed local requests;
-shared deployments use the authenticated Basic identity.
+shared deployments use the authenticated cookie-session identity.
+
+## Collaborator login lifecycle
+
+The login page exchanges the existing configured username/password for an opaque
+HttpOnly cookie. SQLite stores only the token hash, account credential fingerprint,
+creation time, and last user activity. Server validation enforces 30 minutes idle
+and 8 hours absolute lifetime. Account removal/password changes revoke old access;
+deployment restarts preserve valid sessions without resetting either deadline.
+
+Only `/api/auth/activity`, with the required same-origin activity header, extends
+idle time. Browser pointer/keyboard/input events trigger throttled updates; SSE,
+state polling, visibility changes, and session status reads never do. The UI gives
+a two-minute warning and offers explicit logout. Revocation/expiry is rechecked
+before every SSE event. Auth records never enter conversation ledgers or exports.
+Login lifecycle has no effect on the AI worker, run budgets, or recorded history.
 
 ## Research forks, forced turns and participant views
 

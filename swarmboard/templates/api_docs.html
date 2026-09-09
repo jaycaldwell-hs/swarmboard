@@ -5,10 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Swarmboard API reference</title>
     <link rel="stylesheet" href="/static/api_docs.css">
+    <link rel="stylesheet" href="/static/auth.css">
+    <script src="/static/auth.js" defer></script>
   </head>
   <body>
     <header>
-      <nav aria-label="Swarmboard navigation"><a href="/">Board</a><a href="/sessions">Sessions</a></nav>
+      <nav aria-label="Swarmboard navigation"><a href="/">Board</a><a href="/sessions">Sessions</a>{% include "auth_controls.html" %}</nav>
       <h1>API reference</h1>
       <p>Use your board login to access these routes. The <a href="/openapi.json">OpenAPI schema</a> contains request fields and response formats.</p>
     </header>

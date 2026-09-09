@@ -1,6 +1,6 @@
 # Credential access review — September 9, 2026
 
-Scope: whether someone with the board's HTTP Basic login can retrieve provider
+Scope: whether someone with a board collaborator login can retrieve provider
 API keys through the app, including configuration edits, traces, events, exports,
 errors, static files and provider requests. This is a focused code review and
 test exercise, not a guarantee against every possible attack.
@@ -15,6 +15,7 @@ test exercise, not a guarantee against every possible attack.
 | User sampling maps could replace request messages/model or supply tools/plugins | Request integrity and the no-new-tools boundary could be bypassed; no key exfiltration was demonstrated | Allow only generation settings and validate before credential resolution or network/process creation |
 | Captured persona source metadata and filesystem failures included server paths | A board login could reveal private directory names in state, traces, events, exports, or errors | Mask captured source directories as `server-managed` on output and use generic filesystem/reload errors; preserve original provenance when public settings are saved again |
 | Default API documentation loaded third-party JavaScript, fonts, and a favicon | External scripts ran in the authenticated board's origin | Serve a local API reference at `/docs` and `/redoc`, retain authenticated `/openapi.json`, and send `Referrer-Policy: no-referrer` |
+| Browser-cached Basic credentials had no inactivity expiry or reliable logout | An unattended browser retained access to collaboration controls | Replace Basic access with server-side cookie sessions: 30-minute idle expiry, 8-hour absolute expiry, explicit logout, and a two-minute warning |
 
 Codex argument validation and malformed provider-usage errors were also tightened.
 The fixed OpenRouter HTTPS destination/key binding, disabled redirects, restricted
@@ -41,15 +42,23 @@ tools. The UI's existing help button now reads **Help**.
   JSON escapes, exports, global/per-session settings roundtrips, and reload failures.
   Source masking never rewrites stored prompts, persona files, or audit events.
 - Frontend regressions check escaped post content and same-origin navigation/export
-  links. Both API reference pages use local CSS with no scripts or external assets.
+  links. Both API reference pages use local CSS and the local login-session script,
+  with no external assets.
 - The live board had no sessions during the initial scan, so populated history and
   export surfaces were checked using those isolated fixtures rather than creating
   production conversations or making billable model calls.
 
-The final local gate passed: **578 Python tests and 32 frontend tests**. Page
+The final local gate passed: **602 Python tests and 42 frontend tests**. Page
 templates render, and `git diff --check` passes. Deployment is verified against the
 exact pushed commit, with a repeat authenticated credential scan and asset checks;
 the final live deployment result is reported separately in the delivery message.
+
+Login lifecycle tests cover exact idle/absolute expiry, credential changes,
+restart persistence, cross-origin rejection, duplicate cookies, logout replay,
+and active event-stream invalidation. DOM tests cover warning/renewal controls,
+trusted user activity, tab synchronization, expiry clearing, and offline logout
+retry. Browser visual automation could not connect in this environment; rendered
+templates and live HTTP checks provide the available UI verification.
 
 ## Access boundaries
 
@@ -57,6 +66,13 @@ Board collaborators can see environment-variable **names**, models, personas and
 conversation history. Both logins have the same board controls, including the
 ability to run billable sessions. The fixes protect credential values; they do not
 introduce separate administrator/viewer roles or per-user spending controls.
+
+Login tokens are opaque, HttpOnly cookies, Secure on hosted connections, with
+SameSite=Strict. Only token hashes and expiry metadata are stored in a separate
+SQLite table, excluded from board exports. Logout and expiry invalidate API access
+and active event streams; background polling does not refresh inactivity. A
+credential change invalidates existing sessions. Logging out does not stop a
+shared AI run or rewrite conversation history.
 
 Raw model captures and database backups remain private server files and may contain
 original text before redaction. Render administrators and anyone with server/disk

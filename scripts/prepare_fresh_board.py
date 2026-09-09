@@ -25,11 +25,15 @@ def main():
     parser.add_argument("--output", type=Path, default=Path("private/swarmboard-fresh.db"))
     args = parser.parse_args()
     accounts = json.loads(Path("private/accounts.json").read_text())
-    with httpx.Client(base_url=args.url.rstrip("/"), auth=("admin", accounts["admin"]), timeout=30) as client:
+    with httpx.Client(base_url=args.url.rstrip("/"), timeout=30) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": accounts["admin"]})
+        if login.status_code != 200:
+            raise SystemExit(f"Cannot sign in: HTTP {login.status_code}")
         response = client.get("/api/state")
         if response.status_code != 200:
             raise SystemExit(f"Cannot read current agents: HTTP {response.status_code}")
         agents = response.json()["agents"]
+        client.post("/api/auth/logout")
     args.output.parent.mkdir(exist_ok=True, mode=0o700)
     descriptor = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(descriptor)

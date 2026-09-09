@@ -11,6 +11,7 @@ import pytest
 from swarmboard.app import create_app
 from swarmboard.config import Settings
 from .test_engine_acceptance import ScriptedGateway
+from .auth_helpers import login
 
 
 class PageResources(HTMLParser):
@@ -37,21 +38,24 @@ async def docs_client(tmp_path, monkeypatch):
     monkeypatch.setenv("SWARMBOARD_REQUIRE_AUTH", "1")
     settings = Settings(database_url=f"sqlite:///{tmp_path / 'docs.db'}", persona_dir=tmp_path)
     app = create_app(settings=settings, gateway=ScriptedGateway(), recover_on_start=False)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test",
-                                auth=("collaborator", "planted-docs-password")) as client:
-        yield app, client
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as client:
+            await login(client, "collaborator", "planted-docs-password")
+            yield app, client
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["/docs", "/redoc"])
 async def test_api_reference_uses_local_assets_and_keeps_schema_available(docs_client, path):
     app, client = docs_client
-    assert (await client.get(path, auth=None)).status_code == 401
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as anonymous:
+        assert (await anonymous.get(path)).status_code == 401
     response = await client.get(path)
     assert response.status_code == 200
     page = PageResources()
     page.feed(response.text)
-    assert page.scripts == [] and page.handlers == []
+    assert len(page.scripts) == 1 and page.scripts[0].get("src") == "/static/auth.js"
+    assert page.handlers == []
     assert "/openapi.json" in page.references
     assert "/static/api_docs.css" in page.references
     assert all(urlsplit(urljoin("https://board.test", ref)).netloc == "board.test" for ref in page.references)
@@ -79,5 +83,6 @@ async def test_reference_renders_schema_descriptions_as_inert_text(docs_client):
     assert "&lt;script" in response.text and "&lt;img" in response.text
     page = PageResources()
     page.feed(response.text)
-    assert not page.scripts and not page.handlers
+    assert len(page.scripts) == 1 and page.scripts[0].get("src") == "/static/auth.js"
+    assert not page.handlers
     assert not any("observer.invalid" in reference for reference in page.references)

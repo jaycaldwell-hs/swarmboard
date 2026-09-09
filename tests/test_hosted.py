@@ -80,14 +80,15 @@ def hosted_configuration(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_hosted_startup_registers_ada_and_preserves_edits_across_restarts(hosted_configuration, monkeypatch):
     from swarmboard.app import create_app
+    from .auth_helpers import login
 
     settings, files = hosted_configuration
     gateway = ScriptedGateway()
     monkeypatch.setattr("swarmboard.app.create_app", lambda **kwargs: create_app(gateway=gateway, **kwargs))
     app = create_hosted_app(settings)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test",
-                                    auth=("researcher", "test-password")) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as client:
+            await login(client, "researcher", "test-password")
             state = (await client.get("/api/state")).json()
             ada_agents = [agent for agent in state["agents"] if agent["handle"] == "ada"]
             assert len(ada_agents) == 1
@@ -132,8 +133,8 @@ async def test_hosted_startup_registers_ada_and_preserves_edits_across_restarts(
     monkeypatch.setenv("SWARMBOARD_PERSONA_BUNDLE_B64", base64.b64encode(json.dumps(changed_files).encode()).decode())
     restarted = create_hosted_app(settings)
     async with restarted.router.lifespan_context(restarted):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=restarted), base_url="https://board.test",
-                                    auth=("researcher", "test-password")) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=restarted), base_url="https://board.test") as client:
+            await login(client, "researcher", "test-password")
             state = (await client.get("/api/state")).json()
             ada_agents = [agent for agent in state["agents"] if agent["handle"] == "ada"]
             assert len(ada_agents) == 1

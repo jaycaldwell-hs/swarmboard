@@ -7,6 +7,7 @@ from sqlalchemy import select
 from swarmboard.app import create_app
 from swarmboard.models import Event, Run, Thread
 from .test_engine_acceptance import ScriptedGateway
+from .auth_helpers import login
 
 
 @pytest.mark.asyncio
@@ -15,8 +16,8 @@ async def test_authenticated_fork_is_idempotent_source_unchanged_and_sse_visible
     monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
     app = create_app(database_url=f"sqlite:///{tmp_path / 'fork-api.db'}", gateway=ScriptedGateway())
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test",
-                                     auth=("researcher", "fixture-password")) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as client:
+            await login(client, "researcher", "fixture-password")
             peers = (await client.get("/api/state")).json()["agents"]
             created = (await client.post("/api/sessions", json={"agent_ids": [peers[0]["id"]],
                 "body": "Original opening", "continuous": False, "idempotency_key": "source"})).json()

@@ -213,6 +213,7 @@ async def test_hosted_allowed_request_uses_expected_key_without_following_redire
 async def test_hosted_agent_api_rejects_unsafe_creation_and_effective_partial_updates(tmp_path, monkeypatch, hosted):
     from swarmboard.app import create_app
     from .test_engine_acceptance import ScriptedGateway
+    from .auth_helpers import login
 
     monkeypatch.setattr("swarmboard.config.load_dotenv", lambda **kwargs: None)
     monkeypatch.setenv("SWARMBOARD_HOSTED", "1" if hosted else "0")
@@ -220,8 +221,8 @@ async def test_hosted_agent_api_rejects_unsafe_creation_and_effective_partial_up
     gateway = ScriptedGateway()
     app = create_app(database_url=f"sqlite:///{tmp_path / 'provider-api.db'}", gateway=gateway)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test",
-                                    auth=("researcher", "test-password")) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="https://board.test") as client:
+            await login(client, "researcher", "test-password")
             original_agents = (await client.get("/api/state")).json()["agents"]
             allowed = {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY"}
             payload = {"handle": "hosted_peer", "provider": "openai_compatible", "model": "test-model",

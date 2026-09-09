@@ -162,6 +162,7 @@ async def test_finding_events_are_database_immutable(force_client):
 
 @pytest.mark.asyncio
 async def test_shared_findings_use_authenticated_identity_and_separate_idempotency_keys(tmp_path, monkeypatch):
+    from .auth_helpers import login
     for name in ("SWARMBOARD_REQUIRE_AUTH", "SWARMBOARD_HOSTED", "RENDER", "SWARMBOARD_LOCAL_OPERATOR"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("SWARMBOARD_AUTH_USERS", json.dumps({"alice": "alice-password", "bob": "bob-password"}))
@@ -171,8 +172,9 @@ async def test_shared_findings_use_authenticated_identity_and_separate_idempoten
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
             records = []
             for person in ("alice", "bob"):
+                await login(client, person, f"{person}-password")
                 response = await client.post(f"/api/runs/{rid}/notes", json={
-                    "body": "Shared observation", "idempotency_key": "same-client-key"}, auth=(person, f"{person}-password"))
+                    "body": "Shared observation", "idempotency_key": "same-client-key"})
                 assert response.status_code == 201, response.text
                 records.append(response.json())
             assert records[0]["id"] != records[1]["id"]

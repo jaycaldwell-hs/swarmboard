@@ -64,6 +64,12 @@
   }
 
   function bindInterface() {
+    window.addEventListener("swarmboard:auth-lock", () => {
+      store.eventSource?.close();
+      store.eventSource = null;
+      store.requestVersion += 1;
+      window.clearTimeout(store.refreshTimer);
+    });
     ["new-thread-button", "sidebar-new-thread", "empty-new-thread"].forEach((id) => {
       document.getElementById(id)?.addEventListener("click", openNewThreadDialog);
     });
@@ -225,6 +231,7 @@
   }
 
   async function loadState({ threadId = null, silent = false } = {}) {
+    if (window.SwarmAuth?.locked) return;
     const version = ++store.requestVersion;
     const isThreadChange = threadId && String(threadId) !== String(store.selectedThread?.id || "");
     if (isThreadChange) {
@@ -1286,6 +1293,7 @@
   }
 
   function connectEventStream() {
+    if (window.SwarmAuth?.locked) return;
     if (!("EventSource" in window) || !navigator.onLine) {
       setConnection("offline", navigator.onLine ? "No live stream" : "Offline");
       return;
@@ -1318,6 +1326,7 @@
   }
 
   function handleServerEvent(event) {
+    if (window.SwarmAuth?.locked) return;
     if (event.type === "heartbeat") {
       setConnection("live", "Live");
       return;

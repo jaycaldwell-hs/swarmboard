@@ -7,6 +7,7 @@ import subprocess
 import time
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from http.cookies import SimpleCookie
 
 
 def run(*args):
@@ -37,8 +38,16 @@ def main():
             raise AssertionError("Unauthenticated API was exposed")
         except HTTPError as response:
             assert response.code == 401
-        auth = "Basic " + base64.b64encode(b"tester:fixture-password").decode()
-        with urlopen(Request("http://127.0.0.1:18080/api/state", headers={"Authorization": auth})) as response:
+        with urlopen(Request("http://127.0.0.1:18080/api/auth/login",
+                data=json.dumps({"username": "tester", "password": "fixture-password"}).encode(),
+                headers={"Content-Type": "application/json"})) as response:
+            cookies = SimpleCookie(response.headers["Set-Cookie"])
+            cookie = cookies["swarmboard_session"]
+            assert cookie["secure"] and cookie["httponly"] and cookie["samesite"].lower() == "strict"
+        # Explicitly forward the secure cookie only for this loopback HTTP
+        # container fixture. The deployed browser always connects over HTTPS.
+        with urlopen(Request("http://127.0.0.1:18080/api/state",
+                headers={"Cookie": f"swarmboard_session={cookie.value}"})) as response:
             state = json.load(response)
         ada = next(agent for agent in state["agents"] if agent["handle"] == "ada")
         assert ada["provider"] == "codex" and ada["model"] == "gpt-6-astra"

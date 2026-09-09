@@ -11,12 +11,23 @@ from sqlalchemy import select
 
 from swarmboard.app import create_app
 from swarmboard.auth import AuthSettings, BasicAuthMiddleware
+from swarmboard.auth_sessions import SessionStore
 from swarmboard.models import Event
 
-from .test_engine_acceptance import ScriptedGateway
+from .auth_helpers import login
+from .test_engine_acceptance import ScriptedGateway, make_database
 
 
 TEST_USERS = {"researcher": "test-password", "observer": "different-test-password"}
+
+
+@pytest.fixture
+def middleware_store():
+    engine, factory = make_database()
+    try:
+        yield SessionStore(factory)
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -52,8 +63,8 @@ async def test_every_surface_requires_login_and_health_is_minimal(authenticated_
             ):
                 response = await client.request(method, path)
                 assert response.status_code == 401, (method, path, response.text)
-                assert response.json() == {"detail": "Authentication required"}
-                assert response.headers["www-authenticate"].startswith('Basic realm="Swarmboard"')
+                assert response.json() == {"detail": "Authentication required", "reason": "authentication_required"}
+                assert "www-authenticate" not in response.headers
                 assert response.headers["cache-control"] == "private, no-store"
                 assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
                 assert response.headers["x-frame-options"] == "DENY"
@@ -74,6 +85,7 @@ async def test_credentials_and_malformed_headers(authenticated_app):
                 "Basic " + base64.b64encode(b"\xff:password").decode(),
                 "Basic " + base64.b64encode(b"researcher:wrong").decode(),
                 "Basic " + base64.b64encode(b"unknown:test-password").decode(),
+                "Basic " + base64.b64encode(b"researcher:test-password").decode(),
             ):
                 response = await client.get("/api/state", headers={"Authorization": authorization})
                 assert response.status_code == 401
@@ -82,14 +94,15 @@ async def test_credentials_and_malformed_headers(authenticated_app):
             duplicate = await client.get("/api/state", headers=[("Authorization", f"Basic {encoded}")] * 2)
             assert duplicate.status_code == 401
             for username, password in TEST_USERS.items():
-                response = await client.get("/api/state", auth=(username, password))
+                await login(client, username, password)
+                response = await client.get("/api/state")
                 assert response.status_code == 200
                 assert response.headers["cache-control"] == "private, no-store"
                 assert response.headers["content-security-policy"] == "frame-ancestors 'none'"
                 assert response.headers["x-frame-options"] == "DENY"
-                assert "Authorization" in response.headers["vary"]
+                assert "Cookie" in response.headers["vary"]
             for path in ("/", "/static/app.js", "/docs", "/openapi.json", "/api/events?once=true"):
-                response = await client.get(path, auth=("researcher", TEST_USERS["researcher"]))
+                response = await client.get(path)
                 assert response.status_code == 200
             assert "text/event-stream" in response.headers["content-type"]
 
@@ -97,8 +110,8 @@ async def test_credentials_and_malformed_headers(authenticated_app):
 @pytest.mark.asyncio
 async def test_authenticated_human_posts_and_session_openings_cannot_be_spoofed(authenticated_app):
     async with authenticated_app.router.lifespan_context(authenticated_app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test",
-                                    auth=("researcher", TEST_USERS["researcher"])) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test") as client:
+            await login(client, "researcher", TEST_USERS["researcher"])
             payload = {"title": "Shared investigation", "body": "Opening question.", "author_handle": "SYSTEM", "idempotency_key": "same-browser-key"}
             first = await client.post("/api/threads", json=payload)
             assert first.status_code == 201, first.text
@@ -107,16 +120,17 @@ async def test_authenticated_human_posts_and_session_openings_cannot_be_spoofed(
             retry = await client.post("/api/threads", json=payload)
             assert retry.json()["thread_id"] == first.json()["thread_id"]
             assert retry.json()["created"] is False
-            second = await client.post("/api/threads", json=payload, auth=("observer", TEST_USERS["observer"]))
+            await login(client, "observer", TEST_USERS["observer"])
+            second = await client.post("/api/threads", json=payload)
             assert second.status_code == 201
             assert second.json()["thread_id"] != first.json()["thread_id"]
             assert second.json()["post"]["author_handle"] == "observer"
             reply = await client.post(f"/api/threads/{first.json()['thread_id']}/posts",
-                                      json={"body": "Intervention", "author_handle": "ada"},
-                                      auth=("observer", TEST_USERS["observer"]))
+                                      json={"body": "Intervention", "author_handle": "ada"})
             assert reply.status_code == 201
             assert reply.json()["post"]["author_handle"] == "observer"
             assert reply.json()["post"]["author_type"] == "human"
+            await login(client, "researcher", TEST_USERS["researcher"])
             agents = (await client.get("/api/state")).json()["agents"]
             payload = {"agent_ids": [agents[0]["id"]], "title": "Recorded intervention", "body": "Authored opening",
                        "continuous": False, "idempotency_key": "shared-session-key"}
@@ -127,7 +141,8 @@ async def test_authenticated_human_posts_and_session_openings_cannot_be_spoofed(
             assert opening["author_type"] == "human"
             retry = await client.post("/api/sessions", json=payload)
             assert retry.json()["run_id"] == created.json()["run_id"]
-            second = await client.post("/api/sessions", json=payload, auth=("observer", TEST_USERS["observer"]))
+            await login(client, "observer", TEST_USERS["observer"])
+            second = await client.post("/api/sessions", json=payload)
             assert second.status_code == 201
             assert second.json()["run_id"] != created.json()["run_id"]
             exported = await client.get(f"/api/sessions/{created.json()['run_id']}/export")
@@ -146,8 +161,8 @@ async def test_authenticated_ada_session_opening_is_human(tmp_path: Path, monkey
     monkeypatch.setenv("SWARMBOARD_PERSONA_DIR", str(persona_dir))
     authenticated_app = create_app(database_url=f"sqlite:///{tmp_path / 'ada-auth.db'}", gateway=ScriptedGateway())
     async with authenticated_app.router.lifespan_context(authenticated_app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test",
-                                    auth=("observer", TEST_USERS["observer"])) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test") as client:
+            await login(client, "observer", TEST_USERS["observer"])
             agents = (await client.get("/api/state")).json()["agents"]
             response = await client.post("/api/personas/ada/sessions", json={
                 "title": "Ada opening", "body": "Consider this question", "peer_ids": [agents[0]["id"]],
@@ -163,8 +178,8 @@ async def test_authenticated_ada_session_opening_is_human(tmp_path: Path, monkey
 @pytest.mark.asyncio
 async def test_browser_mutations_require_same_origin(authenticated_app):
     async with authenticated_app.router.lifespan_context(authenticated_app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test",
-                                    auth=("researcher", TEST_USERS["researcher"])) as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test") as client:
+            await login(client, "researcher", TEST_USERS["researcher"])
             payload = {"title": "Allowed origin", "body": "A human-created thread."}
             for headers in (
                 {"Origin": "https://attacker.test"}, {"Origin": "null"}, {"Origin": "http://board.test"},
@@ -210,7 +225,7 @@ async def test_local_mode_preserves_existing_human_handle(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_middleware_delivers_stream_chunks_before_completion(monkeypatch: pytest.MonkeyPatch):
+async def test_middleware_delivers_stream_chunks_before_completion(monkeypatch: pytest.MonkeyPatch, middleware_store):
     monkeypatch.setenv("SWARMBOARD_AUTH_USERS", json.dumps(TEST_USERS))
     messages = asyncio.Queue()
     finish_stream = asyncio.Event()
@@ -225,10 +240,10 @@ async def test_middleware_delivers_stream_chunks_before_completion(monkeypatch: 
     async def receive():
         return {"type": "http.request", "body": b""}
 
-    middleware = BasicAuthMiddleware(endpoint, AuthSettings.from_env())
-    authorization = b"Basic " + base64.b64encode(b"researcher:test-password")
+    middleware = BasicAuthMiddleware(endpoint, AuthSettings.from_env(), store=middleware_store)
+    token, _ = middleware_store.issue("researcher", TEST_USERS["researcher"])
     scope = {"type": "http", "path": "/api/events", "method": "GET", "scheme": "https",
-             "headers": [(b"authorization", authorization), (b"host", b"board.test")]}
+             "headers": [(b"cookie", f"swarmboard_session={token}".encode()), (b"host", b"board.test")]}
     task = asyncio.create_task(middleware(scope, receive, messages.put))
     try:
         assert (await asyncio.wait_for(messages.get(), timeout=1))["type"] == "http.response.start"
@@ -246,8 +261,8 @@ async def test_successful_mutations_have_separate_attributed_action_events(authe
     async with authenticated_app.router.lifespan_context(authenticated_app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=authenticated_app), base_url="https://board.test") as client:
             async def mutate(method, path, route, *, username="researcher", body=None):
-                response = await client.request(method, path + "?debug=secret-query-value", json=body,
-                                                auth=(username, TEST_USERS[username]))
+                await login(client, username, TEST_USERS[username])
+                response = await client.request(method, path + "?debug=secret-query-value", json=body)
                 assert 200 <= response.status_code < 300, response.text
                 expected.append((username, {"method": method, "path": route, "status": response.status_code}))
                 return response.json()
@@ -275,12 +290,13 @@ async def test_successful_mutations_have_separate_attributed_action_events(authe
             await mutate("POST", "/api/emergency-stop", "/api/emergency-stop")
 
             # Rejections and reads must not look like successful human actions.
+            client.cookies.clear()
             assert (await client.post("/api/emergency-stop")).status_code == 401
-            assert (await client.post("/api/agents", json={}, auth=("researcher", TEST_USERS["researcher"]))).status_code == 422
-            assert (await client.post("/api/runs/missing/start", auth=("researcher", TEST_USERS["researcher"]))).status_code == 404
-            assert (await client.post("/api/emergency-stop", headers={"Origin": "https://other.test"},
-                                      auth=("researcher", TEST_USERS["researcher"]))).status_code == 403
-            replay = await client.get(f"/api/sessions/{run_id}/export", auth=("researcher", TEST_USERS["researcher"]))
+            await login(client, "researcher", TEST_USERS["researcher"])
+            assert (await client.post("/api/agents", json={})).status_code == 422
+            assert (await client.post("/api/runs/missing/start")).status_code == 404
+            assert (await client.post("/api/emergency-stop", headers={"Origin": "https://other.test"})).status_code == 403
+            replay = await client.get(f"/api/sessions/{run_id}/export")
             exported_actions = [event for event in replay.json()["events"] if event["event_type"] == "human.action"]
             assert len(exported_actions) == 5
             assert all(event["actor_id"] in TEST_USERS for event in exported_actions)
@@ -298,7 +314,7 @@ async def test_successful_mutations_have_separate_attributed_action_events(authe
 
 
 @pytest.mark.asyncio
-async def test_audit_failure_preserves_successful_response_without_exposing_error(monkeypatch: pytest.MonkeyPatch, caplog):
+async def test_audit_failure_preserves_successful_response_without_exposing_error(monkeypatch: pytest.MonkeyPatch, caplog, middleware_store):
     monkeypatch.setenv("SWARMBOARD_AUTH_USERS", json.dumps(TEST_USERS))
     messages = []
     audit_calls = []
@@ -317,10 +333,10 @@ async def test_audit_failure_preserves_successful_response_without_exposing_erro
     async def send(message):
         messages.append(message)
 
-    middleware = BasicAuthMiddleware(endpoint, AuthSettings.from_env(), audit=audit)
-    authorization = b"Basic " + base64.b64encode(b"researcher:test-password")
+    middleware = BasicAuthMiddleware(endpoint, AuthSettings.from_env(), store=middleware_store, audit=audit)
+    token, _ = middleware_store.issue("researcher", TEST_USERS["researcher"])
     scope = {"type": "http", "path": "/api/threads", "method": "POST", "scheme": "https",
-             "headers": [(b"authorization", authorization), (b"host", b"board.test")]}
+             "headers": [(b"cookie", f"swarmboard_session={token}".encode()), (b"host", b"board.test")]}
     await middleware(scope, receive, send)
     assert audit_calls == [201]
     assert [message["type"] for message in messages] == ["http.response.start", "http.response.body"]
