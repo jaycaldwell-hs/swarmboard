@@ -129,6 +129,10 @@ def _post_json(post: Post) -> dict[str, Any]:
             "sequence": post.sequence,
             "intent": post.intent,
             "metadata": post.metadata_json,
+            "is_inherited": bool(post.metadata_json.get("is_inherited")),
+            "inherited_from_post_id": post.metadata_json.get("inherited_from_post_id"),
+            "inherited_from_thread_id": post.metadata_json.get("inherited_from_thread_id"),
+            "inherited_from_run_id": post.metadata_json.get("inherited_from_run_id"),
             "created_at": post.created_at,
         }
     )
@@ -208,6 +212,8 @@ def _run_json(run: Run, *, thread_id: str | None = None) -> dict[str, Any]:
             "config": run.config,
             "session_type": run.config.get("session_type", "collaboration"),
             "policy": run.config.get("policy", {}),
+            "lineage": run.config.get("lineage"),
+            "sibling_group_id": run.config.get("sibling_group_id"),
             "limits": limits,
             "counters": counters,
             "max_rounds": run.max_rounds,
@@ -425,6 +431,10 @@ def create_app(
     async def audit_human_action(scope: dict[str, Any], response_status: int) -> None:
         route_path = getattr(scope.get("route"), "path", None)
         if route_path is None:
+            return
+        if route_path in {"/api/threads/{thread_id}/fork", "/api/turns/{turn_id}/resample"}:
+            # The operation records the attributed action on the child only.
+            # Auditing the URL's source here would contaminate frozen lineage.
             return
         # Only the resolved route template and existing record IDs are captured.
         # Bodies, headers, query strings, and arbitrary path values stay out of
@@ -1157,6 +1167,8 @@ def create_app(
 
     from .session_api import router as session_router
     app.include_router(session_router(factory, find_ada, load_ada, swarm, publish_since))
+    from .research_api import router as research_router
+    app.include_router(research_router(factory, swarm, publish_since))
     return app
 
 

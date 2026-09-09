@@ -4,7 +4,7 @@ from __future__ import annotations
 from sqlalchemy import select
 
 from . import cadence, sessions
-from .models import Post, Thread
+from .models import Event, Post, Thread
 from .repository import InvalidStateError
 from .stimuli import plan_reactive_stimuli
 
@@ -69,17 +69,23 @@ def prompt(agent, snapshot, *, run=None):
     return interface + identity + f"Persona: {agent.persona}\n"
 
 
-def context(repo, run, agent):
+def context(repo, run, agent, *, at_event_id=None):
     from .sessions import session_agent
     threads = []
     board_threads = (list(repo.session.scalars(select(Thread).where(Thread.run_id == run.id).order_by(Thread.created_at, Thread.id)))
                      if cadence.enabled(run) else repo.list_threads(run_id=run.id, limit=30))
     for thread in board_threads:
+        if at_event_id is not None and repo.session.scalar(select(Post.id).join(Event,
+                (Event.post_id == Post.id) & (Event.event_type == "post.created"))
+                .where(Post.thread_id == thread.id, Event.id <= at_event_id).limit(1)) is None:
+            continue
         if cadence.enabled(run):
             threads.append({"id": thread.id, "title": thread.title, "status": thread.status})
             continue
-        recent = list(repo.session.scalars(select(Post).where(Post.thread_id == thread.id)
-                      .order_by(Post.sequence.desc()).limit(4)))
+        query = select(Post).where(Post.thread_id == thread.id)
+        if at_event_id is not None:
+            query = query.join(Event, (Event.post_id == Post.id) & (Event.event_type == "post.created")).where(Event.id <= at_event_id)
+        recent = list(repo.session.scalars(query.order_by(Post.sequence.desc()).limit(4)))
         threads.append({"id": thread.id, "title": thread.title, "status": thread.status,
                         "recent_posts": [{"id": p.id, "author_handle": p.author_handle,
                                           "body": p.body[:3000]} for p in reversed(recent)]})

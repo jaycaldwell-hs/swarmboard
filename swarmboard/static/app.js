@@ -11,6 +11,7 @@
     server: {},
     filter: "all",
     search: "",
+    hideResearch: false,
     replyParentId: null,
     selectedEventId: null,
     turnDetails: new Map(),
@@ -96,6 +97,10 @@
       store.search = event.target.value.trim().toLocaleLowerCase();
       renderThreads();
     });
+    document.getElementById("hide-research")?.addEventListener("change", event => {
+      store.hideResearch = event.target.checked;
+      renderThreads();
+    });
 
     dom.threadFilters?.addEventListener("click", (event) => {
       const tab = event.target.closest("[data-status]");
@@ -120,6 +125,12 @@
     dom.postFeed?.addEventListener("click", (event) => {
       const replyButton = event.target.closest("[data-reply-post-id]");
       if (replyButton) beginReply(replyButton.dataset.replyPostId);
+      const forkButton = event.target.closest("[data-fork-post-id]");
+      if (forkButton) {
+        const post = store.selectedThread?.posts.find(post => post.id === forkButton.dataset.forkPostId);
+        if (post) window.SwarmResearch?.openFork({thread: store.selectedThread, post, run: currentRun(), agents: store.agents,
+          onCreated: async result => { await selectThread(result.thread_id); showToast("Research fork ready", "Use Step once in Session to begin."); }});
+      }
     });
 
     dom.cancelReply?.addEventListener("click", clearReply);
@@ -178,6 +189,9 @@
     dom.turnInspector?.addEventListener("click", (event) => {
       const postButton = event.target.closest("[data-focus-post]");
       if (postButton) focusPost(postButton.dataset.focusPost);
+      const resample = event.target.closest("[data-resample-turn]");
+      if (resample) window.SwarmResearch?.openResample({turnId: resample.dataset.resampleTurn,
+        onCreated: async result => { if (result.forks?.[0]) await selectThread(result.forks[0].thread_id); }});
     });
 
     dom.replayRunButton?.addEventListener("click", () => {
@@ -245,6 +259,8 @@
 
       syncThreadHash();
       renderAll();
+      const linkedPost = new URLSearchParams(location.hash.slice(1)).get("post");
+      if (linkedPost && isThreadChange) window.setTimeout(() => focusPost(linkedPost), 0);
       dom.app?.setAttribute("aria-busy", "false");
       if (navigator.onLine && (!store.eventSource || store.eventSource.readyState !== EventSource.OPEN)) {
         setConnection("connecting", "Syncing");
@@ -270,11 +286,14 @@
   function renderThreads() {
     if (!dom.threadList) return;
     dom.threadCount.textContent = String(store.threads.length);
-    const threads = store.threads.filter((thread) => {
+    const matching = store.threads.filter((thread) => {
       const statusMatch = store.filter === "all" || normalizedStatus(thread.status) === store.filter;
       const haystack = `${thread.title || ""} ${thread.summary || ""}`.toLocaleLowerCase();
       return statusMatch && (!store.search || haystack.includes(store.search));
     });
+    const entries = window.SwarmResearch?.threadEntries(matching, store.runs, store.selectedThreadId, store.hideResearch)
+      || matching.map(thread => ({thread, depth: 0, siblingCount: 0}));
+    const threads = entries.map(entry => entry.thread);
 
     if (!threads.length) {
       const hasAny = store.threads.length > 0;
@@ -288,14 +307,15 @@
       return;
     }
 
-    dom.threadList.innerHTML = threads.map((thread) => {
+    dom.threadList.innerHTML = entries.map(({thread, depth, siblingCount}) => {
       const status = normalizedStatus(thread.status);
       const selected = String(thread.id) === String(store.selectedThreadId);
       const posts = numberValue(thread.post_count, thread.current_sequence, 0);
       const unanswered = numberValue(thread.unanswered_count, 0);
       return `
         <button
-          class="thread-item${selected ? " is-active" : ""}"
+          class="thread-item${selected ? " is-active" : ""}${depth ? " is-fork" : ""}"
+          ${depth ? `style="margin-left:${depth * 12}px;width:calc(100% - ${depth * 12}px)"` : ""}
           type="button"
           data-thread-id="${escapeHtml(thread.id)}"
           ${selected ? 'aria-current="page"' : ""}
@@ -310,6 +330,7 @@
             <span>${escapeHtml(status)}</span>
             <span>·</span>
             <span>${formatCompactNumber(posts)} post${posts === 1 ? "" : "s"}</span>
+            ${siblingCount > 1 ? `<span class="sibling-count">${siblingCount} samples</span>` : ""}
             ${unanswered > 0 ? `<span class="unanswered-pill">${formatCompactNumber(unanswered)} open</span>` : ""}
           </span>
         </button>`;
@@ -352,6 +373,8 @@
     const run = currentRun();
     const researchBadge = document.getElementById("active-research-badge");
     if (researchBadge) researchBadge.hidden = (run?.session_type || run?.config?.session_type) !== "research";
+    const researchNavigation = document.getElementById("research-navigation");
+    if (researchNavigation) researchNavigation.innerHTML = window.SwarmResearch?.navigationHtml(run, store.runs) || "";
     const runIsOpen = run && ["created", "running", "paused"].includes(normalizedRunState(run.state));
     const terminalRun = run && !runIsOpen;
     const closed = status === "closed";
@@ -451,6 +474,7 @@
               <span class="post-author-line">
                 <strong class="post-author">${escapeHtml(human ? author : `@${stripAt(author)}`)}</strong>
                 <span class="post-author-type">${human ? "human" : "regular"}</span>
+                ${post.is_inherited || post.metadata?.is_inherited ? '<span class="inherited-badge">Inherited</span>' : ""}
               </span>
               <time class="post-time" datetime="${escapeHtml(post.created_at || "")}" title="${escapeHtml(fullDate(post.created_at))}">${escapeHtml(relativeTime(post.created_at))}</time>
             </span>
@@ -460,6 +484,7 @@
           <footer class="post-foot">
             ${intent ? `<span class="intent-tag ${intent}">${escapeHtml(intentLabel)}</span>` : ""}
             <button class="post-reply-button" type="button" data-reply-post-id="${escapeHtml(post.id)}">Reply</button>
+            ${(currentRun()?.session_type || currentRun()?.config?.session_type) === "research" ? `<details class="post-overflow"><summary aria-label="Research actions for post ${sequence}">More</summary><button type="button" data-fork-post-id="${escapeHtml(post.id)}">Fork here</button></details>` : ""}
           </footer>
         </article>
         ${children ? `<ol class="post-children">${children}</ol>` : ""}
@@ -579,7 +604,12 @@
         <div class="run-controls">
           ${runControlsHtml(run, state)}
         </div>
+        <div id="run-participant-tools"></div>
       </div>`;
+    window.SwarmResearch?.renderPanel(document.getElementById("run-participant-tools"), {
+      run, thread: store.selectedThread, threads: store.threads, agents: store.agents,
+      onChange: () => loadState({threadId: store.selectedThreadId, silent: true}),
+    });
   }
 
   function budgetMetric(label, counters, limits, counterKeys, limitKeys, format = "number") {
@@ -746,6 +776,7 @@
         ${turn.session_type === "research" ? `<div class="trace-stat"><dt>Research policy</dt><dd>${escapeHtml(turn.policy_snapshot?.profile || "production")}</dd></div><div class="trace-stat"><dt>Outcome</dt><dd>${escapeHtml(turn.outcome || turn.state)}</dd></div>` : ""}
       </dl>
       <div class="trace-content">
+        ${turn.session_type === "research" ? `<details class="research-turn-actions"><summary>Research actions</summary><button type="button" data-resample-turn="${escapeHtml(turn.id)}">Resample this turn</button></details>` : ""}
         <section class="trace-summary-grid">
           <div>
             <h4>Selection reason</h4>
@@ -1379,8 +1410,10 @@
   }
 
   function handleHashChange() {
-    const id = new URLSearchParams(location.hash.slice(1)).get("thread");
+    const params = new URLSearchParams(location.hash.slice(1));
+    const id = params.get("thread");
     if (id && id !== String(store.selectedThreadId)) selectThread(id);
+    else if (params.get("post")) focusPost(params.get("post"));
   }
 
   function syncThreadHash() {

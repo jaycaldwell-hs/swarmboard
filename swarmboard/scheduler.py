@@ -140,6 +140,9 @@ class SchedulingDecision:
     seed: int
     wake_allowed: bool = True
     injected_role: str | None = None
+    forced: bool = False
+    forced_by: str | None = None
+    override_cooldown: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -149,6 +152,9 @@ class SchedulingDecision:
             "seed": self.seed,
             "wake_allowed": self.wake_allowed,
             "injected_role": self.injected_role,
+            "forced": self.forced,
+            "forced_by": self.forced_by,
+            "override_cooldown": self.override_cooldown,
         }
 
 

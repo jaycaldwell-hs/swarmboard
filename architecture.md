@@ -546,3 +546,45 @@ Ada. Startup disables unsupported registrations with an audit event; it preserve
 all old agent and conversation rows. Server credentials are environment names in
 configuration. `SWARMBOARD_LOCAL_OPERATOR` provides attributed local requests;
 shared deployments use the authenticated Basic identity.
+
+## Research forks, forced turns and participant views
+
+`research.py` maps a fork onto a new Run, Thread and immutable Experiment setup
+manifest. Source posts 1..N are inserted through the existing transactional post
+primitive with new IDs, remapped reply parents, and `is_inherited` plus source
+run/thread/post IDs in metadata and `post.created`. Inherited posts consume no
+fresh run, participant or thread budgets and never update agent cooldowns.
+Lineage and its ancestor chain live on the child config and `research.forked`
+event only. Reverse queries find forks without touching source events. Terminal
+sources remain frozen. Existing provider-safety-block no-retry rules also apply
+to forks and resamples.
+
+Forks clone stable config, policy and current roster, while dropping runtime
+queue/cadence state. Fresh budgets are the default. Remaining budgets use current
+source usage, with explicit per-agent and per-thread remainder caps; exhausted
+remaining budgets are rejected instead of silently replenished. The default state
+is CREATED/manual. Inherited history is rendered to participants as normal posts;
+researcher surfaces mark it inherited. Configuration is still live for future
+turns, as with ordinary sessions.
+
+Forced turns are high-priority durable `new_evidence` stimuli. Selection is bypassed
+but permissions, budgets, open-thread state, delivery fencing and action policy
+remain. Scheduler records include forced author and cooldown override. Production
+forced turns honor generated same-run cooldowns even in collaboration sessions;
+ordinary collaboration scheduling is unchanged. Passing a forced turn does not
+offer that forced opportunity to a different participant.
+
+Resampling forks the source thread at the captured history boundary, queues the
+same participant in each sibling, and records a shared group ID. Prompt reuse
+copies the original stored prompt string exactly. Reply references from reused
+prompts map to inherited IDs for validation/execution; raw output and parsed action
+keep the original IDs, while validated action records the mapped IDs. References
+outside the inherited fork remain invalid under the existing parent/thread rules.
+Current provider configuration is used; prompt reuse alone does not pin a remote
+model version or make provider sampling deterministic.
+
+`GET /api/threads/{id}/participant-view` builds the same provider-neutral context
+without a model call or any writes. It accepts agent_id and optional at_post_id;
+history cutoffs trim thread, cross-thread and cadence content. This previews current
+participant configuration against that history, not a reconstruction of past
+configuration. The exact captured prompt on a completed turn is still authoritative.

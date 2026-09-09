@@ -57,3 +57,33 @@ Implementation in progress. Each phase is committed only after `make test` passe
   captured persona and all other assertions remain unchanged.
 
 Phase 1 gate: `make test` passed — 385 Python tests and 11 Node tests.
+
+## Phase 2 — Fork, force next speaker and resample (item 2)
+
+- Added transactional `research.py` and `/api/threads/{id}/fork`,
+  `/api/runs/{id}/force-turn`, `/api/turns/{id}/resample`,
+  `/api/threads/{id}/forks` and `/api/threads/{id}/participant-view`.
+- Forks create Run+Thread+Experiment with inherited post metadata, remapped parent
+  IDs, full ancestor lineage, current roster and fresh/remaining budget choices.
+  Source rows/events are untouched, including by authenticated request auditing.
+  Creation is idempotent; events follow ordinary SSE publication patterns.
+- Forced stimuli bypass selection, record author/override, retain commit fences,
+  defer production cooldowns and never hand a pass to a different participant.
+  Resamples are grouped sibling forks with optional byte-identical prompt reuse.
+  Original raw/parsed replies retain their IDs; execution maps inherited parents.
+- UI adds Participant tools to both types; research-only secondary fork/resample
+  controls, inherited badges, lineage/sibling navigation, nested/collapsed branches
+  and a hide-research filter. Extended README, architecture and session guide.
+- Decisions: source safety-block forks remain prohibited by the existing no-retry
+  invariant. Remaining budgets mean the source's current usage, not reconstructed
+  usage at post N. Reused prompts still use current provider configuration; no
+  deterministic remote-sampling guarantee is made. Historical participant previews
+  combine the selected history prefix with current configuration; exact historical
+  configurations remain available through captured turn prompts. Cross-thread
+  parent references outside the fork's inherited history are rejected, not invented.
+- Tests cover source immutability (including authenticated HTTP/SSE), inherited
+  prefixes and fresh quotas, terminal/live/nested forks, remaining budgets,
+  forced selection/cooldown/attribution/fencing, resample prompt identity/parent
+  mapping, historical participant visibility and conditional frontend controls.
+
+Phase 2 gate: `make test` passed — 424 Python tests and 16 Node tests.

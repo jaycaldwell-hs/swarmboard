@@ -45,6 +45,12 @@
     $("report-policy").hidden = data.session_type !== "research";
     $("report-policy").textContent = data.session_type === "research" ? `Research · ${data.policy?.profile || "production"} policy` : "";
     $("thread-link").href = run?.thread_id ? `/#thread=${encodeURIComponent(run.thread_id)}` : "/";
+    $("session-research-navigation").innerHTML = window.SwarmResearch?.navigationHtml(run, state.runs) || "";
+    const thread = state.threads?.find(thread => thread.id === run?.thread_id);
+    if (thread) window.SwarmResearch?.renderPanel($("session-participant-tools"), {
+      run, thread, threads: state.threads, agents: state.agents, onChange: refresh,
+    });
+    else $("session-participant-tools").innerHTML = "";
     const rotation = data.cadence;
     $("cadence-note").textContent = rotation
       ? `Order: ${rotation.peer_order.flatMap(handle => ["@" + handle, "@" + rotation.ada_handle]).join(" → ")}. ${rotation.quiet ? "Waiting for a new contribution." : "Participants choose their topics and threads."}`
@@ -69,7 +75,7 @@
     $("metrics").innerHTML = [[m.turns_used,"Turns"],[m.tokens_used,"Tokens"],[m.threads,"Threads"],[m.new_thread,"Agent-started threads"],[m.pass,"Passes"],[m.failed_turns,"Failed turns"]]
       .map(([value,label]) => `<div class="metric"><strong>${esc(value)}</strong><span>${label}</span></div>`).join("");
     $("roster").innerHTML = data.participants.map(p => `<p><strong>@${esc(p.handle)}</strong><br>${esc(p.provider)} / ${esc(p.model)}${p.available ? "" : " · not active"}</p>`).join("");
-    $("actions").innerHTML = data.actions.map(action => `<tr><td><button data-trace="${esc(action.turn_id)}">${esc(action.turn_id.slice(0,8))}</button></td><td>@${esc(action.handle)}</td><td>${esc(action.kind)}</td><td>${esc(action.state)}</td><td>${esc(action.error || (action.resulting_post_id ? "Posted to board" : "No post"))}</td></tr>`).join("") || '<tr><td colspan="5">No turns yet.</td></tr>';
+    $("actions").innerHTML = data.actions.map(action => `<tr><td><button data-trace="${esc(action.turn_id)}">${esc(action.turn_id.slice(0,8))}</button>${data.session_type === "research" ? `<details class="research-turn-actions"><summary>More</summary><button type="button" data-resample="${esc(action.turn_id)}">Resample</button></details>` : ""}</td><td>@${esc(action.handle)}</td><td>${esc(action.kind)}</td><td>${esc(action.state)}</td><td>${esc(action.error || (action.resulting_post_id ? "Posted to board" : "No post"))}</td></tr>`).join("") || '<tr><td colspan="5">No turns yet.</td></tr>';
   }
 
   $("session-form").addEventListener("input", () => { requestKey = null; });
@@ -116,6 +122,9 @@
     });
   });
   $("actions").addEventListener("click", event => {
+    const resample = event.target.closest("[data-resample]");
+    if (resample) window.SwarmResearch?.openResample({turnId: resample.dataset.resample,
+      onCreated: async result => { if (result.forks?.[0]) { choose(result.forks[0].run_id); await refresh(); } }});
     const button = event.target.closest("[data-trace]");
     if (button) attempt(async () => {
       $("trace-content").textContent = JSON.stringify(await api(`/api/turns/${encodeURIComponent(button.dataset.trace)}`), null, 2);

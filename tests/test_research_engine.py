@@ -153,6 +153,52 @@ async def test_production_research_consecutive_cap_blocks_next_self_turn(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_research_cap_larger_than_context_window_uses_complete_streak(tmp_path):
+    db, factory = make_database(f"sqlite:///{tmp_path / 'long-cap.db'}")
+    rid, tid, ids = seed(factory, policy={"profile": "permissive", "consecutive_turn_cap": 150})
+    with factory.begin() as session:
+        repo = Repository(session)
+        run = repo.get_run(rid)
+        run.max_posts = 500
+        run.per_agent_quota = 500
+        run.per_thread_quota = 500
+        for index in range(150):
+            repo.create_agent_post(tid, ids[0], f"Existing contribution {index}.")
+    gateway = ScriptedGateway()
+    engine = engine_for(factory, gateway)
+    await engine.step(rid)
+    with factory() as session:
+        event = session.scalar(select(Event).where(Event.run_id == rid, Event.event_type == "scheduler.no_selection"))
+        assert "consecutive turn cap" in str(event.payload)
+        assert session.scalar(select(Turn).where(Turn.run_id == rid)) is None
+    assert gateway.calls == []
+    await engine.shutdown()
+    db.dispose()
+
+
+@pytest.mark.asyncio
+async def test_research_dedup_checks_latest_posts_beyond_first_page(tmp_path):
+    db, factory = make_database(f"sqlite:///{tmp_path / 'long-dedup.db'}")
+    rid, tid, _ = seed(factory, policy="production")
+    latest = "The late human contribution copied by the model."
+    with factory.begin() as session:
+        repo = Repository(session)
+        repo.get_run(rid).max_posts = 1000
+        for index in range(500):
+            repo.create_human_post(tid, f"Earlier human observation {index}.")
+        repo.create_human_post(tid, latest)
+    gateway = ScriptedGateway(AgentAction(action="reply", body=latest, intent="clarify"))
+    engine = engine_for(factory, gateway)
+    await engine.step(rid)
+    with factory() as session:
+        turn = session.scalar(select(Turn).where(Turn.run_id == rid))
+        assert turn.outcome == "rejected_by_policy" and "duplicate" in turn.rejection_reason
+        assert turn.resulting_post_id is None
+    await engine.shutdown()
+    db.dispose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("profile", ["production", "permissive"])
 async def test_fresh_commit_cooldown_consults_run_policy_after_another_thread_posts(profile, tmp_path, monkeypatch):
     db, factory = make_database(f"sqlite:///{tmp_path / ('commit-' + profile + '.db')}")

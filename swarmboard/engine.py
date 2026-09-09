@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, Sequence
+from types import SimpleNamespace
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -54,7 +55,7 @@ from .personas import SYSTEM_PROMPT
 from .persona_context import HARNESS_PROMPT_VERSION, harness_prompt, persona_snapshot
 from .policies import ActionPolicy
 from .repository import ClaimConflictError, InvalidStateError, Repository
-from .scheduler import SchedulingDecision, WeightedFairScheduler
+from .scheduler import CandidateScore, SchedulingDecision, WeightedFairScheduler
 from .stimuli import plan_reactive_stimuli
 
 
@@ -348,6 +349,55 @@ class SwarmEngine:
         return ActionPolicy(replace(self.policy.config,
             max_agent_ping_pong_posts=0, allow_consecutive_posts=True,
             allow_self_replies=True, allow_repeated_posts=True, max_body_chars=50_000))
+
+    def _turn_agent(self, session, run, agent, stimulus=None):
+        view = sessions.session_agent(session, run, agent)
+        if stimulus is None or not stimulus.payload.get("forced"):
+            return view
+        view = SimpleNamespace(**{name: getattr(view, name) for name in (
+            "id", "handle", "role", "persona", "provider", "model", "enabled", "settings",
+            "permissions", "cooldown_seconds", "last_spoke_at")})
+        policy = run_policy.policy_for(run)
+        view.cooldown_seconds = 0
+        view.last_spoke_at = None
+        if policy["cooldowns"] and not stimulus.payload.get("override_cooldown"):
+            view.cooldown_seconds = (policy["cooldown_seconds"] if policy["cooldown_seconds"] is not None
+                                     else agent.cooldown_seconds)
+            view.last_spoke_at = session.scalar(select(func.max(Post.created_at)).join(
+                Turn, Turn.resulting_post_id == Post.id).where(Turn.run_id == run.id, Turn.agent_id == agent.id))
+        return view
+
+    def _turn_policy(self, run, stimulus=None):
+        policy = self._policy_for(run)
+        if stimulus is not None and stimulus.payload.get("forced"):
+            policy = ActionPolicy(replace(policy.config, enforce_cooldown=(
+                run_policy.policy_for(run)["cooldowns"] and not stimulus.payload.get("override_cooldown"))))
+        return policy
+
+    def _forced_decision(self, run, thread, stimulus, agents, quota_remaining):
+        if thread.status == ThreadStatus.CLOSED.value:
+            return SchedulingDecision([], [], "thread is closed", _stable_int(run.seed, stimulus.id),
+                wake_allowed=False, forced=True, forced_by=stimulus.payload.get("forced_by"),
+                override_cooldown=bool(stimulus.payload.get("override_cooldown")))
+        candidates = []
+        for agent in agents:
+            eligible = bool(agent.enabled and agent.permissions.get("speak", True)
+                            and quota_remaining.get(agent.id, 1) > 0)
+            components, reasons = {"forced": 1.0}, ["researcher selected this speaker"]
+            if not eligible:
+                reasons.append("agent quota exhausted" if quota_remaining.get(agent.id, 1) <= 0 else "posting permission denied")
+            if agent.last_spoke_at and agent.cooldown_seconds:
+                remaining = agent.cooldown_seconds - (self._virtual_now(run) - agent.last_spoke_at).total_seconds()
+                if remaining > 0:
+                    eligible = False
+                    components["cooldown"] = -100.0
+                    reasons.append("cooldown remains")
+            candidates.append(CandidateScore(agent.id, agent.handle, agent.role, 1.0, eligible, components, reasons))
+        decision = SchedulingDecision([c.agent_id for c in candidates if c.eligible][:1], candidates,
+            "forced by " + str(stimulus.payload.get("forced_by")), _stable_int(run.seed, stimulus.id),
+            forced=True, forced_by=stimulus.payload.get("forced_by"),
+            override_cooldown=bool(stimulus.payload.get("override_cooldown")))
+        return decision
 
     async def rerun(
         self,
@@ -898,7 +948,7 @@ class SwarmEngine:
                         )
                     )
                     posts.reverse()
-                    agents = [sessions.session_agent(session, run, a) for a in
+                    agents = [self._turn_agent(session, run, a, stimulus) for a in
                               repo.list_agents(enabled_only=True, agent_ids=run.config.get("agent_ids"))]
                     attempted = set(stimulus.payload.get("attempted_agent_ids", []))
                     unavailable = set(run.config.get("unavailable_agent_ids", []))
@@ -910,10 +960,12 @@ class SwarmEngine:
                         select(func.count(Post.id)).where(
                             Post.thread_id == thread.id,
                             Post.author_type == AuthorType.AGENT.value,
+                            Post.metadata_json["is_inherited"].as_boolean().is_not(True),
                         )
                     ) or 0
                     round_slots = max(0, run.max_rounds - run.rounds_used)
-                    thread_slots = max(0, run.per_thread_quota - thread_posts)
+                    thread_slots = max(0, min(run.per_thread_quota,
+                        run.config.get("inherited_thread_quota_remaining", run.per_thread_quota)) - thread_posts)
                     configured_selection = self._run_config_int(
                         run,
                         "max_agents_per_stimulus",
@@ -922,7 +974,7 @@ class SwarmEngine:
                         maximum=2,
                     )
                     selection_limit = min(configured_selection, round_slots, thread_slots)
-                    decision = self._scheduler_for(run).select(
+                    decision = self._forced_decision(run, thread, stimulus, agents, quota_remaining) if stimulus.payload.get("forced") else self._scheduler_for(run).select(
                         agents,
                         thread=thread,
                         posts=posts,
@@ -1028,6 +1080,13 @@ class SwarmEngine:
                                 stimulus=stimulus,
                                 agent=agent,
                             )
+                            captured_prompt = None
+                            if stimulus.payload.get("reuse_turn_id"):
+                                original = repo.get_turn(stimulus.payload["reuse_turn_id"])
+                                captured_prompt = original.prompt
+                                messages = self._decode_prompt(captured_prompt)
+                                context = dict(original.context_snapshot)
+                                memory_ids = list(original.retrieved_memory_ids)
                             sampling = self._sampling_settings(agent, run)
                             turn_seed = _stable_int(run.seed, stimulus.id, agent.id)
                             turn = repo.create_turn(
@@ -1040,7 +1099,7 @@ class SwarmEngine:
                                 context_snapshot=context,
                                 scheduler_scores=decision.as_dict(),
                                 selection_reason=decision.reason,
-                                prompt=json.dumps(
+                                prompt=captured_prompt if captured_prompt is not None else json.dumps(
                                     [message.model_dump() for message in messages],
                                     ensure_ascii=False,
                                     separators=(",", ":"),
@@ -1069,8 +1128,9 @@ class SwarmEngine:
         posts: Sequence[Post],
         stimulus: Stimulus,
         agent: Agent,
+        at_event_id: int | None = None,
     ) -> tuple[dict[str, Any], list[ChatMessage], list[str]]:
-        selected_posts = cadence.transcript(Repository(session), run) if cadence.enabled(run) else list(posts)[-self._context_limit(run) :]
+        selected_posts = cadence.transcript(Repository(session), run, at_event_id=at_event_id) if cadence.enabled(run) else list(posts)[-self._context_limit(run) :]
         memories = list(
             session.scalars(
                 select(Memory)
@@ -1137,7 +1197,7 @@ class SwarmEngine:
             "memories": memory_payload,
         }
         if autonomy.enabled(run):
-            context["environment"] = autonomy.context(Repository(session), run, agent)
+            context["environment"] = autonomy.context(Repository(session), run, agent, at_event_id=at_event_id)
             context["participants"] = context["environment"]["participants"]
             context["prompt_version"] = "autonomous-board-v1"
             if cadence.enabled(run):
@@ -1196,7 +1256,7 @@ class SwarmEngine:
                 return None
             agent = repo.get_agent(turn.agent_id)
             run = repo.get_run(turn.run_id) if turn.run_id else None
-            agent = sessions.session_agent(session, run, agent)
+            agent = self._turn_agent(session, run, agent, repo.get_stimulus(turn.stimulus_id) if turn.stimulus_id else None)
             repo.mark_turn_calling(turn.id)
             messages = self._decode_prompt(turn.prompt)
             seed = turn.seed
@@ -1253,9 +1313,14 @@ class SwarmEngine:
                     sampling=sampling,
                 )
                 result = self._coerce_gateway_result(raw_result, agent)
+                if run and result.action.parent_post_id in run.config.get("post_id_map", {}):
+                    result = replace(result, action=result.action.model_copy(update={
+                        "parent_post_id": run.config["post_id_map"][result.action.parent_post_id]}))
                 final_result = result
                 last_raw = result.raw_output
                 parsed_action = result.action.model_dump(mode="json")
+                if run and run.config.get("source_turn_id"):
+                    parsed_action = json.loads(result.raw_output)
                 aggregate_input += result.usage.prompt_tokens
                 aggregate_output += result.usage.completion_tokens
                 aggregate_total += result.usage.total_tokens
@@ -1283,8 +1348,9 @@ class SwarmEngine:
                         for post in current_posts
                         if post.metadata_json.get("action_fingerprint")
                     }
-                    current_agent = sessions.session_agent(policy_session, current_run, current_agent)
-                    decision = self._policy_for(current_run).validate(
+                    current_stimulus = policy_session.get(Stimulus, current_turn.stimulus_id)
+                    current_agent = self._turn_agent(policy_session, current_run, current_agent, current_stimulus)
+                    decision = self._turn_policy(current_run, current_stimulus).validate(
                         result.action,
                         agent=current_agent,
                         thread=current_thread,
@@ -1575,8 +1641,9 @@ class SwarmEngine:
                 for post in posts
                 if post.metadata_json.get("action_fingerprint")
             }
-            current_agent = sessions.session_agent(session, run, agent)
-            fresh_decision = self._policy_for(run).validate(
+            current_stimulus = session.get(Stimulus, turn.stimulus_id)
+            current_agent = self._turn_agent(session, run, agent, current_stimulus)
+            fresh_decision = self._turn_policy(run, current_stimulus).validate(
                 action,
                 agent=current_agent,
                 thread=thread,
@@ -1595,7 +1662,8 @@ class SwarmEngine:
                     turn.id,
                     state=TurnState.FAILED,
                     raw_output=result.raw_output,
-                    parsed_action=action.model_dump(mode="json"),
+                    parsed_action=(json.loads(result.raw_output) if run and run.config.get("source_turn_id")
+                                   else action.model_dump(mode="json")),
                     error=f"run became {run.state} before action commit",
                     latency_ms=latency_ms,
                     input_tokens=input_tokens,
@@ -1611,7 +1679,8 @@ class SwarmEngine:
                     turn.id,
                     state=TurnState.FAILED,
                     raw_output=result.raw_output,
-                    parsed_action=action.model_dump(mode="json"),
+                    parsed_action=(json.loads(result.raw_output) if run and run.config.get("source_turn_id")
+                                   else action.model_dump(mode="json")),
                     error=f"policy changed before commit: {fresh_decision.reason}",
                     latency_ms=latency_ms,
                     input_tokens=input_tokens,
@@ -1627,7 +1696,8 @@ class SwarmEngine:
                     turn.id,
                     state=TurnState.FAILED,
                     raw_output=result.raw_output,
-                    parsed_action=action.model_dump(mode="json"),
+                    parsed_action=(json.loads(result.raw_output) if run and run.config.get("source_turn_id")
+                                   else action.model_dump(mode="json")),
                     error="post budget exhausted before commit",
                     latency_ms=latency_ms,
                     input_tokens=input_tokens,
@@ -1643,15 +1713,17 @@ class SwarmEngine:
                 and action.action != "new_thread"
                 and sum(
                     post.author_type == AuthorType.AGENT.value
+                    and not post.metadata_json.get("is_inherited")
                     for post in posts
                 )
-                >= run.per_thread_quota
+                >= min(run.per_thread_quota, run.config.get("inherited_thread_quota_remaining", run.per_thread_quota))
             ):
                 failed = repo.finish_turn(
                     turn.id,
                     state=TurnState.FAILED,
                     raw_output=result.raw_output,
-                    parsed_action=action.model_dump(mode="json"),
+                    parsed_action=(json.loads(result.raw_output) if run and run.config.get("source_turn_id")
+                                   else action.model_dump(mode="json")),
                     error="per-thread quota exhausted before commit",
                     latency_ms=latency_ms,
                     input_tokens=input_tokens,
@@ -1704,7 +1776,8 @@ class SwarmEngine:
                     state=TurnState.COMPLETED,
                     resulting_post_id=post_id,
                     raw_output=result.raw_output,
-                    parsed_action=action.model_dump(mode="json"),
+                    parsed_action=(json.loads(result.raw_output) if run and run.config.get("source_turn_id")
+                                   else action.model_dump(mode="json")),
                     validated_action=action.model_dump(mode="json"),
                     latency_ms=latency_ms,
                     input_tokens=input_tokens,
@@ -1935,6 +2008,10 @@ class SwarmEngine:
             unavailable_target = not turns and stimulus.target_agent_id is not None
             noncontributing = noncontributing or unavailable_target
             active_run = repo.get_run(stimulus.run_id) if stimulus.run_id else None
+            if stimulus.payload.get("forced"):
+                # A forced opportunity belongs only to its named recipient.
+                noncontributing = False
+                unavailable_target = False
             if cadence.enabled(active_run):
                 cadence.complete_slot(repo, active_run, stimulus, turns)
             fixed_cadence = cadence.enabled(active_run)
@@ -2172,10 +2249,10 @@ class SwarmEngine:
     ) -> datetime | None:
         """Return the earliest temporary eligibility time for durable triggers."""
 
-        if not (stimulus.kind in {
+        if not stimulus.payload.get("forced") and (not (stimulus.kind in {
             StimulusKind.MENTION.value,
             StimulusKind.UNANSWERED_QUESTION.value,
-        } or stimulus.payload.get("fallback_root_id")) or decision.reason != "no agent is currently eligible":
+        } or stimulus.payload.get("fallback_root_id")) or decision.reason != "no agent is currently eligible"):
             return None
         permanent_reasons = {
             "disabled",
@@ -2217,11 +2294,14 @@ class SwarmEngine:
             .where(
                 Thread.run_id == run.id,
                 Post.author_agent_id.in_([agent.id for agent in agents]),
+                Post.metadata_json["is_inherited"].as_boolean().is_not(True),
             )
             .group_by(Post.author_agent_id)
         ).all()
         used = {str(agent_id): int(count) for agent_id, count in rows if agent_id}
-        return {agent.id: max(0, run.per_agent_quota - used.get(agent.id, 0)) for agent in agents}
+        return {agent.id: max(0, min(run.per_agent_quota,
+            run.config.get("inherited_agent_quota_remaining", {}).get(agent.id, run.per_agent_quota))
+            - used.get(agent.id, 0)) for agent in agents}
 
     def _cancel_thread_stimuli(
         self,

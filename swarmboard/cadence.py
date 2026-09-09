@@ -36,10 +36,13 @@ def participants(repo, run):
     return ada, [p for p in saved if p["id"] != ada["id"]]
 
 
-def transcript(repo, run):
+def transcript(repo, run, *, at_event_id=None):
     # Event IDs preserve commit order across threads, including equal timestamps.
-    return list(repo.session.scalars(select(Post).join(Thread)
-        .join(Event, (Event.post_id == Post.id) & (Event.event_type == "post.created"))
+    query = select(Post).join(Thread)
+    query = query.join(Event, (Event.post_id == Post.id) & (Event.event_type == "post.created"))
+    if at_event_id is not None:
+        query = query.where(Event.id <= at_event_id)
+    return list(repo.session.scalars(query
         .where(Thread.run_id == run.id).order_by(Event.id)))
 
 

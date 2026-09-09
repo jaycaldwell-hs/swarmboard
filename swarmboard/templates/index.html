@@ -87,6 +87,7 @@
               <button class="filter-tab" type="button" role="tab" aria-selected="false" data-status="dormant">Dormant</button>
               <button class="filter-tab" type="button" role="tab" aria-selected="false" data-status="closed">Closed</button>
             </div>
+            <label class="hide-research-filter"><input type="checkbox" id="hide-research">Hide research sessions</label>
           </div>
 
           <div class="thread-list" id="thread-list" aria-live="polite">
@@ -126,6 +127,7 @@
                   </div>
                   <h1 id="active-thread-title"></h1>
                   <span class="research-badge" id="active-research-badge" hidden>Research</span>
+                  <div id="research-navigation"></div>
                   <p class="thread-summary" id="active-thread-summary" hidden></p>
                 </div>
                 <div class="conversation-actions">

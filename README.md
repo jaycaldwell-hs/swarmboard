@@ -55,6 +55,19 @@ FastAPI exposes interactive API documentation at
 
 ## Session collaboration
 
+The Session panel's **Participant tools** lets a human queue a named speaker or
+inspect that participant's current context. A forced turn can still pass or be
+rejected by the active policy. Production cooldowns defer it unless the human
+explicitly overrides the cooldown.
+
+Research sessions also expose **Fork here** in post overflow controls and
+**Resample** in Activity. Forks copy the selected history prefix into a new,
+manual research session with clearly marked inherited posts and fresh budgets.
+The source, including terminal history, is unchanged. Resampling creates sibling
+forks and can reuse the exact captured prompt. Research branches nest beneath
+their source and can be hidden from the thread list. Fork and resample APIs also
+accept collaboration sources, producing research children.
+
 Sessions default to **collaboration** and retain the current conversation behavior.
 Opt into **research** when creating a session to choose a policy preset or individual
 controls. Production research keeps duplicate, loop, cooldown, consecutive-post and

@@ -10,3 +10,31 @@
 .research-badge { display: inline-block; padding: 3px 7px; border: 1px solid #9e8ac0; border-radius: 5px; color: #76549c; font-size: 11px; font-weight: 700; text-transform: uppercase; }
 .research-badge[hidden], .research-profile[hidden] { display: none; }
 .research-profile { font-size: 12px; color: #76549c; }
+.hide-research-filter { display: flex; align-items: center; gap: 7px; margin: 10px 0 0; font-size: 12px; }
+.hide-research-filter input { width: auto; }
+.thread-item.is-fork { border-left: 2px solid #ad9abc; }
+.inherited-badge, .sibling-count { color: #76549c; font-size: 11px; }
+.lineage-breadcrumb { margin: 8px 0; font-size: 12px; color: #766184; }
+.sibling-navigation { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.sibling-navigation a { font-size: 12px; }
+.sibling-navigation [aria-current="page"] { font-weight: 700; text-decoration: underline; }
+.session-tools { border-top: 1px solid #ddd; margin-top: 16px; padding-top: 12px; }
+.session-tools summary, .post-overflow summary, .research-turn-actions summary { cursor: pointer; }
+.session-tools label, .research-dialog label { display: flex; flex-direction: column; gap: 5px; margin: 12px 0; font-size: 13px; }
+.session-tools .check, .research-dialog .check { flex-direction: row; align-items: center; gap: 7px; }
+.session-tools input[type="checkbox"], .research-dialog input[type="checkbox"] { width: auto; }
+.session-tool-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.session-tools [data-status] { font-size: 12px; margin-top: 8px; }
+.post-overflow { position: relative; margin-left: 8px; font-size: 12px; }
+.post-overflow[open] button { position: absolute; right: 0; top: 20px; min-width: 100px; z-index: 3; background: white; }
+.research-turn-actions { margin: 8px 0 12px; font-size: 12px; }
+.research-turn-actions button { margin-top: 8px; }
+.research-dialog { width: min(660px, calc(100vw - 32px)); max-height: 88vh; padding: 24px; border: 1px solid #d4c9dc; border-radius: 14px; color: #29232e; background: #fff; }
+.research-dialog::backdrop { background: rgb(30 20 40 / 35%); }
+.research-dialog header, .research-dialog footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.research-dialog h2 { font-size: 20px; margin: 0; }
+.research-dialog footer { justify-content: flex-end; margin-top: 20px; }
+.research-dialog select, .research-dialog input[type="number"], .research-dialog textarea { width: 100%; padding: 7px; border: 1px solid #bcb4c3; border-radius: 5px; }
+.research-dialog button, .session-tools button, .post-overflow button, .research-turn-actions button { padding: 7px 10px; border: 1px solid #bcb4c3; border-radius: 5px; cursor: pointer; }
+.research-dialog .form-error { color: #a32137; }
+.participant-prompt { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 60vh; overflow: auto; font-size: 12px; }
