@@ -17,7 +17,7 @@ from typing import Any, Literal, Mapping, Protocol, Sequence
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .credentials import validate_hosted_provider
+from .credentials import validate_hosted_provider, validate_sampling
 
 
 ActionName = Literal["reply", "new_thread", "pass", "propose_close"]
@@ -225,6 +225,16 @@ def _safe_json(response: httpx.Response, provider: str) -> dict[str, Any]:
     return payload
 
 
+def _token_count(value: Any) -> int:
+    try:
+        count = int(value or 0)
+        if count < 0:
+            raise ValueError
+        return count
+    except (TypeError, ValueError, OverflowError):
+        raise GatewayError("model response has invalid token usage") from None
+
+
 def provider_error_category(code: Any = None, status: int | None = None, message: str = "") -> str:
     value = str(code or "").casefold()
     if value in {"misalignment_policy_violation", "content_policy_violation", "content_filter", "safety_block"} or "misalignment_policy_violation" in message:
@@ -296,10 +306,14 @@ class OpenAICompatibleGateway:
         sampling: Mapping[str, Any] | None = None,
         seed: int | None = None,
     ) -> GatewayResult:
+        try:
+            options = validate_sampling(sampling)
+        except ValueError as exc:
+            raise GatewayError(str(exc), category="configuration") from None
         request_body: dict[str, Any] = {
+            **options,
             "model": model,
             "messages": _messages_payload(messages),
-            **dict(sampling or {}),
         }
         if seed is not None:
             request_body["seed"] = seed
@@ -334,9 +348,13 @@ class OpenAICompatibleGateway:
         message = choices[0].get("message")
         raw = message.get("content") if isinstance(message, dict) else None
         usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
-        prompt_tokens = int(usage.get("prompt_tokens") or 0)
-        completion_tokens = int(usage.get("completion_tokens") or 0)
-        total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+        try:
+            prompt_tokens = _token_count(usage.get("prompt_tokens"))
+            completion_tokens = _token_count(usage.get("completion_tokens"))
+            total_tokens = _token_count(usage.get("total_tokens") or prompt_tokens + completion_tokens)
+        except GatewayError as exc:
+            exc.raw_output, exc.latency_ms = raw if isinstance(raw, str) else None, latency_ms
+            raise
         token_usage = TokenUsage(prompt_tokens, completion_tokens, total_tokens)
         if choices[0].get("finish_reason") == "content_filter" or (isinstance(message, dict) and message.get("refusal")):
             refusal = message.get("refusal") if isinstance(message, dict) else None
@@ -392,6 +410,10 @@ class ModelGateway:
         merged_sampling = dict(configured_sampling) if isinstance(configured_sampling, Mapping) else {}
         if sampling:
             merged_sampling.update(sampling)
+        try:
+            merged_sampling = validate_sampling(merged_sampling)
+        except ValueError as exc:
+            raise GatewayError(str(exc), category="configuration") from None
         timeout = float(settings.get("timeout_seconds", 90.0))
         extra_headers = settings.get("headers") if isinstance(settings.get("headers"), Mapping) else None
 

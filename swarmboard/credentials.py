@@ -21,6 +21,21 @@ _HOSTED_PROVIDERS = {
     "openrouter.ai": ("OPENROUTER_API_KEY", {"/api", "/api/v1", "/api/v1/chat/completions"}),
 }
 _HOSTED_HEADERS = frozenset({"http-referer", "x-title"})
+# Recognizable provider formats also cover previously captured keys after rotation.
+# Opaque historical strings still require a credential field or an active value.
+_PROVIDER_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9_-])(?:sk-or-v1-[A-Fa-f0-9]{64}|"
+    r"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{35})"
+    r"(?![A-Za-z0-9_-])"
+)
+_JSON_STRING_FIELD_RE = re.compile(r'("(?:[^"\\]|\\.)*")(\s*:\s*)("(?:[^"\\]|\\.)*")')
+_SAMPLING_FIELDS = frozenset({
+    "temperature", "top_p", "top_k", "min_p", "top_a", "typical_p",
+    "frequency_penalty", "presence_penalty", "repetition_penalty",
+    "max_tokens", "max_completion_tokens", "max_output_tokens", "stop",
+    "logit_bias", "logprobs", "top_logprobs", "reasoning", "reasoning_effort",
+    "verbosity", "provider",
+})
 
 
 def redact(value: Any) -> Any:
@@ -32,6 +47,8 @@ def redact(value: Any) -> Any:
     """
     secrets: set[str] = set()
     for name, secret in os.environ.items():
+        if name.endswith(("_ENV", "_ENV_VARS")):
+            continue  # Credential-name references and allowlists are not values.
         if re.search(r"(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH_USERS)", name, re.I) and secret:
             secrets.add(secret)
             if name == "SWARMBOARD_AUTH_USERS":
@@ -47,10 +64,18 @@ def redact(value: Any) -> Any:
         if isinstance(item, str):
             for secret in ordered:
                 item = item.replace(secret, "[REDACTED]")
-                escaped = json.dumps(secret, ensure_ascii=False)[1:-1]
-                if escaped != secret:
+                for escaped in {json.dumps(secret, ensure_ascii=ascii_only)[1:-1] for ascii_only in (False, True)}:
                     item = item.replace(escaped, "[REDACTED]")
-            return item
+            item = _PROVIDER_KEY_RE.sub("[REDACTED]", item)
+            # Raw model artifacts and prompts often contain JSON as a string.
+            # Replace only the sensitive value span, retaining all other bytes.
+            def field(match):
+                try:
+                    name = json.loads(match[1])
+                except ValueError:
+                    return match[0]
+                return match[1] + match[2] + '"[REDACTED]"' if _credential_field(name) else match[0]
+            return _JSON_STRING_FIELD_RE.sub(field, item)
         if isinstance(item, Mapping):
             result = {}
             for key, content in item.items():
@@ -64,20 +89,16 @@ def redact(value: Any) -> Any:
     return clean(value)
 
 
-def _is_literal_api_key(name: object) -> bool:
-    normalized = str(name).strip().casefold().replace("_", "").replace("-", "")
-    return normalized == "apikey"
-
-
 def _credential_field(name: object) -> str | None:
     """Canonical audit labels for fields that hold credential values."""
     normalized = str(name).strip().casefold().replace("_", "").replace("-", "")
-    if normalized == "apikey":
+    if normalized.endswith("apikey"):
         return "api_key"
-    header = _SENSITIVE_HEADERS.get(str(name).strip().casefold())
+    header = next((label for key, label in _SENSITIVE_HEADERS.items()
+                   if key.replace("-", "") == normalized), None)
     if header:
         return header
-    if normalized in {"password", "secret", "clientsecret", "accesstoken", "refreshtoken", "credential", "credentials", "token"}:
+    if normalized.endswith(("password", "secretkey", "apitoken", "clientsecret", "accesstoken", "refreshtoken", "authtoken", "idtoken")) or normalized in {"secret", "credential", "credentials", "token"}:
         return str(name)
     return None
 
@@ -130,10 +151,28 @@ def validate_agent_settings(settings: Mapping[str, Any] | None) -> dict[str, Any
             for item in value:
                 validate_env_names(item)
     validate_env_names(original)
+    validate_sampling(original.get("sampling"))
     version = original.get("persona_version", 1)
     if type(version) is not int or version < 1:
         raise ValueError("persona_version must be a positive integer")
     return original
+
+
+def validate_sampling(sampling: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Only generation controls may enter the provider request from settings.
+
+    Identity, messages, schema, tools, plugins, streams, and routing URLs are
+    controlled by the gateway. Safe OpenRouter provider preference maps remain
+    supported; they cannot change the gateway's destination or credential.
+    """
+    if sampling is None:
+        return {}
+    if not isinstance(sampling, Mapping) or set(sampling) - _SAMPLING_FIELDS:
+        raise ValueError("sampling contains unsupported generation settings")
+    _cleaned, removed = scrub_agent_settings(sampling)
+    if removed:
+        raise ValueError("literal credentials cannot be stored in sampling settings")
+    return dict(sampling)
 
 
 def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) -> None:
@@ -192,4 +231,4 @@ def validate_hosted_provider(provider: str, settings: Mapping[str, Any] | None) 
         raise ValueError("credential environment name is outside SWARMBOARD_ALLOWED_CREDENTIAL_ENV_VARS")
 
 
-__all__ = ["scrub_agent_settings", "validate_agent_settings", "validate_hosted_provider"]
+__all__ = ["redact", "scrub_agent_settings", "validate_agent_settings", "validate_hosted_provider", "validate_sampling"]

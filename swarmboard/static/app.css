@@ -262,6 +262,11 @@ textarea:disabled {
   background: var(--paper-bright);
 }
 
+.help-button {
+  flex-shrink: 0;
+  padding: 0 10px;
+}
+
 .button-danger {
   color: var(--danger);
   border-color: rgb(195 55 44 / 42%);
@@ -2274,12 +2279,12 @@ kbd {
   .brand small { display: none; }
   .brand strong { font-size: 20px; }
   .brand-signal { width: 28px; height: 28px; box-shadow: 2px 2px 0 var(--ink); }
-  .topbar-secondary,
-  #shortcuts-button { display: none; }
+  .topbar-secondary { display: none; }
   .connection-pill { width: 29px; padding: 0; border-radius: 50%; }
   .connection-pill #connection-label { display: none; }
   .topbar-actions { gap: 6px; }
   .topbar-actions .button-primary { min-height: 34px; padding: 0 10px; font-size: 11px; }
+  .topbar-actions .help-button { min-height: 34px; padding: 0 8px; font-size: 11px; }
 
   .workspace { display: block; }
 
@@ -2340,6 +2345,7 @@ kbd {
 
 @media (max-width: 460px) {
   .brand-signal { display: none; }
+  .topbar .brand strong { font-size: 17px; }
   .topbar-actions .button-primary span { display: none; }
   .conversation-header h1 { font-size: 22px; }
   .conversation-actions .button span:not(.pulse-glyph) { display: none; }

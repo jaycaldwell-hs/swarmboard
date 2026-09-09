@@ -106,8 +106,8 @@ def router(factory, swarm, publish_since):
             Repository(session).get_thread(thread_id)
             rows = session.execute(select(Run, Thread).join(Thread, Thread.run_id == Run.id).where(
                 Run.config["lineage"]["parent_thread_id"].as_string() == thread_id).order_by(Run.created_at)).all()
-            return {"forks": [{"run_id": run.id, "thread_id": thread.id, "lineage": run.config["lineage"],
-                               "sibling_group_id": run.config.get("sibling_group_id")} for run, thread in rows]}
+            return redact({"forks": [{"run_id": run.id, "thread_id": thread.id, "lineage": run.config["lineage"],
+                               "sibling_group_id": run.config.get("sibling_group_id")} for run, thread in rows]})
 
     @api.get("/api/threads/{thread_id}/participant-view")
     async def participant_view(thread_id: str, agent_id: str, at_post_id: str | None = None):

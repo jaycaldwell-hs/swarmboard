@@ -10,12 +10,15 @@ from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
+from fastapi.exception_handlers import http_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import Engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import sessions, autonomy, cadence
 from .auth import AuthSettings, BasicAuthMiddleware, human_handle, request_key
@@ -438,7 +441,7 @@ def create_app(
     broker = EventBroker()
 
     async def publish(event: Event | dict[str, Any]) -> None:
-        await broker.publish(_event_json(event) if isinstance(event, Event) else jsonable_encoder(event))
+        await broker.publish(_event_json(event) if isinstance(event, Event) else _public_json(event))
 
     async def audit_human_action(scope: dict[str, Any], response_status: int) -> None:
         route_path = getattr(scope.get("route"), "path", None)
@@ -551,17 +554,31 @@ def create_app(
     templates = Jinja2Templates(directory=str(PACKAGE_DIR / "templates"))
     app.mount("/static", StaticFiles(directory=str(PACKAGE_DIR / "static")), name="static")
 
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
+        # Pydantic includes rejected input and exception context by default.
+        # Neither is needed to explain a field error, and both can hold secrets.
+        errors = [{key: error[key] for key in ("type", "loc", "msg") if key in error}
+                  for error in exc.errors()]
+        return JSONResponse(status_code=422, content=_public_json({"detail": errors}))
+
+    @app.exception_handler(StarletteHTTPException)
+    async def safe_http_error_handler(request: Request, exc: StarletteHTTPException):
+        return await http_exception_handler(request, StarletteHTTPException(
+            status_code=exc.status_code, detail=_public_json(exc.detail),
+            headers=redact(exc.headers) if exc.headers else None))
+
     @app.exception_handler(NotFoundError)
     async def not_found_handler(_: Request, exc: NotFoundError) -> JSONResponse:
-        return JSONResponse(status_code=404, content={"detail": str(exc)})
+        return JSONResponse(status_code=404, content=_public_json({"detail": str(exc)}))
 
     @app.exception_handler(InvalidStateError)
     async def invalid_state_handler(_: Request, exc: InvalidStateError) -> JSONResponse:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        return JSONResponse(status_code=409, content=_public_json({"detail": str(exc)}))
 
     @app.exception_handler(RepositoryError)
     async def repository_error_handler(_: Request, exc: RepositoryError) -> JSONResponse:
-        return JSONResponse(status_code=400, content={"detail": str(exc)})
+        return JSONResponse(status_code=400, content=_public_json({"detail": str(exc)}))
 
     async def publish_since(after_id: int) -> None:
         with factory() as session:
@@ -1080,7 +1097,7 @@ def create_app(
 
     @app.get("/api/runs/{run_id}/replay")
     async def replay_run(run_id: str) -> dict[str, Any]:
-        """Return the original stream verbatim; no provider is called."""
+        """Return captured history with credentials redacted; no provider is called."""
         with factory() as session:
             repo = Repository(session)
             run = repo.get_run(run_id)
@@ -1140,8 +1157,8 @@ def create_app(
             turn = Repository(session).get_turn(turn_id)
             responses = session.scalars(select(Event).where(Event.run_id == turn.run_id,
                 Event.event_type == "provider.response").order_by(Event.id))
-            return {**_turn_json(turn), "provider_responses": [event.payload for event in responses
-                                                             if event.payload.get("turn_id") == turn_id]}
+            return _public_json({**_turn_json(turn), "provider_responses": [event.payload for event in responses
+                                                             if event.payload.get("turn_id") == turn_id]})
 
     @app.get("/api/events")
     async def event_stream(

@@ -126,6 +126,8 @@ Credential redaction is applied recursively to every final record, including
 free text, raw output, prompts, settings, nested findings and event payloads.
 Known secret environment values and credential-bearing field values are
 replaced with a redaction marker; environment-variable names remain usable.
+Recognizable provider-key formats are also redacted after credential rotation,
+and sensitive fields embedded in JSON strings are covered.
 `redacted: true` marks a changed record. Turn records also include
 `prompt_redacted` and `raw_output_redacted`. Hashes commit to the original stored
 text even when the exported text is redacted. An omitted prompt has

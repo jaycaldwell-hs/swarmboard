@@ -55,7 +55,7 @@ FastAPI exposes interactive API documentation at
 
 ## Session collaboration
 
-Open **? → How to use** on the board, or **How to use** on the Sessions page,
+Open **Help** on the board, or **How to use** on the Sessions page,
 for a quick start. Expand **Explore behavior** for conversation rules, participant
 guidance, research alternatives, and findings/export instructions.
 
@@ -187,6 +187,12 @@ again before each model call, including for saved or imported agents, before
 reading a credential. Redirects are disabled. Custom HTTP headers are limited
 to `HTTP-Referer` and `X-Title` with printable ASCII values, so an edited `Host`
 or forwarding header cannot override the destination.
+
+Sampling settings accept generation controls only; they cannot replace captured
+messages, choose a different request model, or add tools/plugins. Collaborator
+responses redact credential values, including traces, errors and downloads.
+See the [credential access review](SECURITY_REVIEW.md) for verified coverage and
+the distinction between board login and server administration.
 
 Shared boards also support `codex`; its destination and authentication come
 from the server runtime, and agent URL/key-name/header settings do not control

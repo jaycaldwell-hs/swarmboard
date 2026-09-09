@@ -76,7 +76,7 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
         await publish_since(before)
         if start:
             await swarm.start(run_id)
-        return output
+        return redact(output)
 
     @api.get("/api/sessions/{run_id}")
     async def get_session(run_id: str):
@@ -111,6 +111,6 @@ def router(factory, find_ada, load_ada, swarm, publish_since):
             run = autonomy.discard_unused(Repository(session), run_id)
             output = {"run_id": run.id, "discarded": True}
         await publish_since(before)
-        return output
+        return redact(output)
 
     return api

@@ -12,9 +12,10 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .credentials import validate_sampling
 from .gateways import (
     ChatMessage, GatewayError, GatewayResult, StructuredOutputError, TokenUsage,
-    _messages_payload, action_json_schema, parse_agent_action, provider_error_category,
+    _messages_payload, _token_count, action_json_schema, parse_agent_action, provider_error_category,
 )
 
 
@@ -178,12 +179,18 @@ class CodexGateway:
         sampling: Mapping[str, Any] | None = None,
         seed: int | None = None,
     ) -> GatewayResult:
-        auth_mode, environment = _runtime_environment()
-        payload = _messages_payload(messages)
-        options = dict(sampling or {})
+        # A model identifier is one CLI value, never another option or config.
+        if not isinstance(model, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}", model) is None:
+            raise GatewayError("invalid Codex model identifier", category="configuration")
+        try:
+            options = validate_sampling(sampling)
+        except ValueError as exc:
+            raise GatewayError(str(exc), category="configuration") from None
         effort = options.get("reasoning_effort", "medium")
-        if effort not in {"low", "medium", "high", "xhigh", "max"}:
-            raise GatewayError(f"unsupported Codex reasoning effort: {effort}")
+        if not isinstance(effort, str) or effort not in {"low", "medium", "high", "xhigh", "max"}:
+            raise GatewayError("unsupported Codex reasoning effort", category="configuration")
+        payload = _messages_payload(messages)
+        auth_mode, environment = _runtime_environment()
         system = "\n\n".join(item["content"] for item in payload if item["role"] == "system")
         conversation = [item for item in payload if item["role"] != "system"]
         if not system or not conversation:
@@ -263,15 +270,22 @@ class CodexGateway:
                 failure = GatewayError(f"Codex turn failed (exit {process.returncode}, {category}{detail}); {guidance}", category=category)
                 failure.diagnostic = label or None
                 raise failure
-            usage_data = completed.get("usage") or {}
-            input_tokens = int(usage_data.get("input_tokens") or 0)
-            output_tokens = int(usage_data.get("output_tokens") or 0)
-            usage = TokenUsage(input_tokens, output_tokens, input_tokens + output_tokens)
             latency_ms = round((time.perf_counter() - started) * 1000)
             try:
                 raw = output.read_bytes().decode("utf-8")
             except OSError as exc:
                 raise GatewayError("Codex completed without a final action") from exc
+            usage_data = completed.get("usage") or {}
+            try:
+                if not isinstance(usage_data, Mapping):
+                    raise GatewayError("model response has invalid token usage")
+                input_tokens = _token_count(usage_data.get("input_tokens"))
+                output_tokens = _token_count(usage_data.get("output_tokens"))
+                cached_input_tokens = _token_count(usage_data.get("cached_input_tokens"))
+            except GatewayError as exc:
+                exc.raw_output, exc.latency_ms = raw, latency_ms
+                raise
+            usage = TokenUsage(input_tokens, output_tokens, input_tokens + output_tokens)
             try:
                 action = parse_agent_action(raw)
             except StructuredOutputError as exc:
@@ -286,7 +300,7 @@ class CodexGateway:
                     "configured_cli_version": os.getenv("SWARMBOARD_CODEX_VERSION"),
                     "reasoning_effort": effort,
                     "thread_id": next((event.get("thread_id") for event in events if event.get("type") == "thread.started"), None),
-                    "cached_input_tokens": int(usage_data.get("cached_input_tokens") or 0),
+                    "cached_input_tokens": cached_input_tokens,
                     "seed_supported": False, "max_output_tokens_enforced": False,
                 },
             )

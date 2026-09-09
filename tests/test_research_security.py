@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 from types import SimpleNamespace
 
@@ -10,8 +11,8 @@ import pytest
 from sqlalchemy import select
 
 from swarmboard.app import create_app
-from swarmboard.credentials import scrub_agent_settings, validate_agent_settings, validate_hosted_provider
-from swarmboard.gateways import GatewayError, ModelGateway
+from swarmboard.credentials import redact, scrub_agent_settings, validate_agent_settings, validate_hosted_provider
+from swarmboard.gateways import GatewayError, ModelGateway, OpenAICompatibleGateway
 from swarmboard.models import Agent, Event, Post
 from swarmboard.repository import Repository
 from tests.test_engine_acceptance import ScriptedGateway, make_database
@@ -150,3 +151,80 @@ async def test_startup_disables_noncompliant_agents_and_scrubs_nested_credential
             assert {event.event_type for event in audits} == {"agent.credentials_scrubbed", "agent.provider_disabled"}
             assert "planted-nested-secret" not in str([event.payload for event in audits])
     db.dispose()
+
+
+@pytest.mark.parametrize("field", ["openai_api_key", "openrouter_api_key", "OPENROUTER_API_KEY",
+    "googleApiKey", "X_API_KEY", "secret_key", "api_token", "Proxy_Authorization", "id_token", "openai_access_token"])
+def test_provider_credential_aliases_are_rejected_scrubbed_and_redacted(field):
+    secret = "planted-rotated-opaque-credential"
+    settings = {**ALLOWED, "nested": [{field: secret}], "sampling": {
+        "max_tokens": 100, "provider": {"zdr": True, "require_parameters": True}}}
+    with pytest.raises(ValueError, match="literal credentials"):
+        validate_agent_settings(settings)
+    clean, audit = scrub_agent_settings(settings)
+    assert secret not in str(clean) and secret not in str(audit)
+    visible = redact(settings)
+    assert visible["nested"][0][field] == "[REDACTED]"
+    assert visible["api_key_env"] == "OPENROUTER_API_KEY"
+    assert visible["sampling"] == settings["sampling"]
+    raw = ' \r\n{"' + field + '": "' + secret + '", "raw": "preserved"}\t'
+    assert redact(raw) == raw.replace(secret, "[REDACTED]")
+
+
+@pytest.mark.parametrize("secret", ["sk-or-v1-" + "a" * 64, "sk-proj-" + "P" * 90,
+    "sk-svcacct-" + "S" * 50, "sk-" + "L" * 48, "AIza" + "G" * 35])
+def test_recognizable_rotated_provider_keys_are_hidden_in_free_text(secret):
+    # No environment contains this planted historical value.
+    raw = "Prefix\r\n" + secret + "\tSuffix"
+    assert redact({"raw_output": raw}) == {"raw_output": "Prefix\r\n[REDACTED]\tSuffix"}
+    assert redact("gpt-6-astra OPENROUTER_API_KEY sk-short-example") == "gpt-6-astra OPENROUTER_API_KEY sk-short-example"
+
+
+def test_unicode_escaped_active_password_is_hidden_without_reformatting_raw_json(monkeypatch):
+    secret = "planted-café-credential"
+    monkeypatch.setenv("SWARMBOARD_AUTH_USERS", json.dumps({"researcher": secret}))
+    raw = ' \r\n' + json.dumps({"body": secret}, ensure_ascii=True) + '\t'
+    assert redact(raw) == raw.replace(json.dumps(secret, ensure_ascii=True)[1:-1], "[REDACTED]")
+    ordinary = ' \r\n{"action": "pass", "body": null}\t'
+    assert redact(ordinary) == ordinary
+
+
+def test_allowlist_environment_values_do_not_hide_credential_variable_names(monkeypatch):
+    monkeypatch.setenv("SWARMBOARD_ALLOWED_CREDENTIAL_ENV_VARS", "OPENROUTER_API_KEY")
+    assert redact(ALLOWED) == ALLOWED
+
+
+@pytest.mark.parametrize("field,value", [("model", "different-model"), ("messages", []),
+    ("tools", [{"type": "function"}]), ("plugins", [{"id": "web"}]),
+    ("stream", True), ("base_url", "https://attacker.test"), ("response_format", {"type": "text"}),
+    ("extra_body", {"messages": []}), ("extra_headers", {"Host": "attacker.test"})])
+@pytest.mark.asyncio
+async def test_request_override_fields_fail_before_credential_read_or_network(monkeypatch, field, value):
+    def fail_secret(name, default=None):
+        if name == "OPENROUTER_API_KEY":
+            pytest.fail("unsafe sampling reached credential resolution")
+        return original_getenv(name, default)
+    original_getenv = os.getenv
+    monkeypatch.setattr("swarmboard.gateways.os.getenv", fail_secret)
+    monkeypatch.setattr("swarmboard.gateways.httpx.AsyncClient", lambda **kwargs: pytest.fail("unsafe sampling reached network"))
+    sampling = {field: value}
+    with pytest.raises(ValueError, match="sampling"):
+        validate_hosted_provider("openai_compatible", {**ALLOWED, "sampling": sampling})
+    participant = SimpleNamespace(provider="openai_compatible", model="qwen/qwen3.8-27b", settings=ALLOWED)
+    with pytest.raises(GatewayError, match="sampling"):
+        await ModelGateway().complete(participant, [], sampling=sampling)
+    with pytest.raises(GatewayError, match="sampling"):
+        await OpenAICompatibleGateway("https://openrouter.ai/api/v1").complete(model="qwen/qwen3.8-27b", messages=[], sampling=sampling)
+
+
+@pytest.mark.asyncio
+async def test_malformed_upstream_token_usage_cannot_echo_a_credential():
+    secret = "planted-opaque-upstream-credential"
+    async def handler(request):
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"action":"pass"}'}}],
+            "usage": {"prompt_tokens": secret}})
+    gateway = OpenAICompatibleGateway("https://openrouter.ai/api/v1", transport=httpx.MockTransport(handler))
+    with pytest.raises(GatewayError, match="invalid token usage") as error:
+        await gateway.complete(model="qwen/qwen3.8-27b", messages=[{"role": "user", "content": "Test"}])
+    assert secret not in str(error.value)
+    assert error.value.raw_output == '{"action":"pass"}'

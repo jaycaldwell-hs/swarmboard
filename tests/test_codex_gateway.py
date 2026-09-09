@@ -117,6 +117,41 @@ async def test_missing_codex_cli_is_a_visible_configuration_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model,sampling", [
+    ("--dangerously-bypass-approvals-and-sandbox", {}),
+    ('gpt-6-astra\n-c model_provider="attacker"', {}),
+    ("gpt-6-astra", {"reasoning_effort": 'medium\nweb_search="live"'}),
+    ("gpt-6-astra", {"reasoning_effort": {"untrusted": "value"}}),
+    ("gpt-6-astra", {"tools": [{"name": "shell"}]}),
+])
+async def test_untrusted_cli_controls_rejected_before_auth_or_process(monkeypatch, model, sampling):
+    monkeypatch.setattr(codex_gateway, "_runtime_environment", lambda: pytest.fail("invalid controls reached credentials"))
+    launch = AsyncMock()
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(GatewayError) as error:
+        await CodexGateway().complete(model=model, messages=MESSAGES, sampling=sampling)
+    assert error.value.category == "configuration"
+    assert "attacker" not in str(error.value)
+    launch.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["input_tokens", "output_tokens", "cached_input_tokens"])
+async def test_codex_malformed_usage_retains_raw_action_without_leaking_diagnostic(monkeypatch, field):
+    raw = ' \r\n{"action":"pass"}\t'
+    secret = "planted-opaque-diagnostic-credential"
+    async def launch(*args, **kwargs):
+        Path(args[args.index("--output-last-message") + 1]).write_bytes(raw.encode())
+        event = json.dumps({"type": "turn.completed", "usage": {field: secret}}).encode()
+        return SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(event, b"")))
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", launch)
+    with pytest.raises(GatewayError, match="invalid token usage") as error:
+        await CodexGateway().complete(model="gpt-6-astra", messages=MESSAGES)
+    assert secret not in str(error.value)
+    assert error.value.raw_output == raw
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("dedicated_key", [False, True])
 async def test_hosted_codex_uses_only_server_key_without_persisting_auth(monkeypatch, dedicated_key):
     monkeypatch.setenv("SWARMBOARD_CODEX_AUTH", "api_key")
