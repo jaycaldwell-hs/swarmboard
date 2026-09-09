@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+.venv
+.pytest_cache
+.pi
+.DS_Store
+**/__pycache__
+**/*.pyc
+*.db*
+*.sqlite*
+persona 1
+private
+backups
+merged_src.py
+merged_tests.py

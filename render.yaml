@@ -1,0 +1,36 @@
+# Secrets are entered during Blueprint setup; none are committed to Git.
+services:
+  - type: web
+    name: swarmboard
+    runtime: docker
+    repo: https://github.com/jaycaldwell-hs/swarmboard
+    plan: 1c-2g
+    region: ohio
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    numInstances: 1
+    autoDeployTrigger: commit
+    disk:
+      name: swarmboard-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: SWARMBOARD_HOSTED
+        value: "1"
+      - key: SWARMBOARD_REQUIRE_AUTH
+        value: "1"
+      - key: SWARMBOARD_CODEX_AUTH
+        value: api_key
+      - key: SWARMBOARD_DB_PATH
+        value: /var/data/swarmboard.db
+      - key: SWARMBOARD_PERSONA_DIR
+        value: /var/data/persona
+      - key: SWARMBOARD_AUTH_USERS
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: SWARMBOARD_PERSONA_BUNDLE_B64
+        sync: false

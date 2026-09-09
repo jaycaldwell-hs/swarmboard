@@ -1,0 +1,22 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+*.db
+*.db-*
+*.db.*
+*.sqlite*
+private/
+backups/
+persona 1/
+.pi/
+.render/
+.vercel/
+merged_src.py
+merged_tests.py

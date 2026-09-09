@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "swarmboard"
+version = "0.1.0"
+description = "A local, event-driven message board for bounded multi-agent collaboration."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "google-genai>=1.0,<2",
+  "httpx>=0.27,<1",
+  "jinja2>=3.1,<4",
+  "pydantic>=2.9,<3",
+  "python-dotenv>=1.0,<2",
+  "sqlalchemy>=2.0,<3",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+]
+
+[project.scripts]
+swarmboard = "swarmboard.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarmboard"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q"
