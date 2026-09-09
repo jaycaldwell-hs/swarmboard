@@ -2165,24 +2165,6 @@ kbd {
   width: min(470px, calc(100vw - 26px));
 }
 
-.shortcut-list {
-  margin: 0;
-  padding: 11px 20px 21px;
-}
-
-.shortcut-list div {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  align-items: center;
-  min-height: 42px;
-  border-bottom: 1px solid var(--line);
-}
-
-.shortcut-list div:last-child { border-bottom: 0; }
-.shortcut-list dt,
-.shortcut-list dd { margin: 0; }
-.shortcut-list dd { color: var(--ink-soft); font-size: 11px; }
-
 .toast-region {
   position: fixed;
   z-index: 200;
