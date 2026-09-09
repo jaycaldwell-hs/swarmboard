@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from swarmboard import codex_gateway
-from swarmboard.codex_gateway import CodexGateway, validate_codex_configuration
+from swarmboard.codex_gateway import CodexGateway, safe_codex_diagnostic, validate_codex_configuration
 from swarmboard.gateways import AgentAction, GatewayError, ModelGateway, StructuredOutputError
 
 
@@ -238,3 +238,66 @@ async def test_codex_transport_status_survives_generic_final_failure(monkeypatch
         await CodexGateway().complete(model="gpt-6-astra", messages=MESSAGES)
     assert error.value.category == category
     assert "sensitive diagnostics" not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("diagnostic, label, category", [
+    ("Error: Permission denied (os error 13)", "runtime_permissions", "configuration"),
+    ("Error: Read-only file system (os error 30)", "runtime_permissions", "configuration"),
+    ("Error: Unknown feature: multi_agent_v2", "unsupported_feature:multi_agent_v2", "configuration"),
+    ("Error: Unknown feature: private-new-feature", "unsupported_feature", "configuration"),
+    ("error: unexpected argument '--ignore-user-config' found", "unsupported_argument:--ignore-user-config", "configuration"),
+    ("error: unexpected argument '--private-secret' found", "unsupported_argument", "configuration"),
+    ("error while loading shared libraries", "runtime_dependency", "configuration"),
+    ("Error: Cannot find module", "runtime_dependency", "configuration"),
+    ("Error loading configuration: unknown variant", "invalid_configuration", "configuration"),
+    ("Error: incorrect API key provided", "api_authentication", "authentication"),
+    ("Error: model_not_found", "model_access", "provider_error"),
+    ("Error: unexpected status 429", "upstream_rate_limit", "rate_limit"),
+    ("Error: misalignment_policy_violation", "upstream_safety_block", "safety_block"),
+    ("Error: error sending request", "runtime_network", "provider_error"),
+    ("Error: No space left on device", "runtime_resources", "configuration"),
+    ("An unrecognized diagnostic", "no_structured_events", "provider_error"),
+])
+async def test_startup_failure_diagnostics_use_only_safe_fixed_labels(monkeypatch, diagnostic, label, category):
+    raw_diagnostic = f"{diagnostic}\nprivate persona text sk-secret-key /private/user/path\n"
+    process = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(b"", raw_diagnostic.encode())))
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    with pytest.raises(GatewayError) as error:
+        await CodexGateway().complete(model="gpt-6-astra", messages=MESSAGES)
+    assert error.value.category == category
+    assert label in str(error.value)
+    assert safe_codex_diagnostic(error.value) == label
+    for sensitive in ("private persona", "sk-secret-key", "/private/user/path", "private-new-feature", "--private-secret"):
+        assert sensitive not in str(error.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code, category", [("invalid_api_key", "authentication"), ("misalignment_policy_violation", "safety_block")])
+async def test_structured_provider_failure_takes_precedence_over_startup_warning(monkeypatch, code, category):
+    event = {"type": "turn.failed", "error": {"code": code}}
+    process = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(
+        json.dumps(event).encode(), b"WARNING: Could not create PATH aliases: Operation not permitted (os error 1)",
+    )))
+    monkeypatch.setattr(codex_gateway.asyncio, "create_subprocess_exec", AsyncMock(return_value=process))
+    with pytest.raises(GatewayError) as error:
+        await CodexGateway().complete(model="gpt-6-astra", messages=MESSAGES)
+    assert error.value.category == category
+    assert "runtime_permissions" not in str(error.value)
+
+
+@pytest.mark.parametrize("injected", [
+    "sk-private-key", "runtime_permissions\nprivate diagnostics", "unsupported_feature:private-feature",
+    "unsupported_argument:--private-secret", {"private": "content"}, ["runtime_permissions"], None,
+])
+def test_safe_codex_diagnostic_rejects_injected_upstream_labels(injected):
+    error = GatewayError("private upstream message must not be inspected")
+    error.diagnostic = injected
+    assert safe_codex_diagnostic(error) is None
+
+
+def test_safe_codex_diagnostic_uses_only_explicit_allowlisted_attribute():
+    error = GatewayError("runtime_permissions")
+    assert safe_codex_diagnostic(error) is None
+    error.diagnostic = "unsupported_feature:skip_host_skill_discovery"
+    assert safe_codex_diagnostic(error) == "unsupported_feature:skip_host_skill_discovery"

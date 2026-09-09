@@ -46,9 +46,12 @@ def main() -> None:
                 json.dump(record, stream)
             print(json.dumps({"created_smoke_session": record}), flush=True)
             try:
-                request("POST", f"/api/runs/{record['run_id']}/step")
+                result = request("POST", f"/api/runs/{record['run_id']}/step")
+                print(json.dumps({"step_result": result}), flush=True)
             finally:
-                request("POST", f"/api/runs/{record['run_id']}/stop")
+                stop = client.post(f"/api/runs/{record['run_id']}/stop")
+                if stop.status_code not in (200, 409):
+                    raise RuntimeError(f"Stopping smoke session: HTTP {stop.status_code}")
             request("POST", f"/api/threads/{record['thread_id']}/posts",
                     auth=("cat", users["cat"]), json={
                         "body": "Deployment smoke test: cat account can contribute to the shared session.",
@@ -58,6 +61,9 @@ def main() -> None:
         exported = request("GET", f"/api/sessions/{record['run_id']}/export")
         responses = [event for event in exported["events"] if event["event_type"] == "provider.response"]
         turns = exported["turns"]
+        print(json.dumps({"turns": [{key: turn.get(key) for key in ("state", "provider", "model", "error", "total_tokens")}
+                                    for turn in turns],
+                          "provider_response_count": len(responses)}), flush=True)
         assert len(turns) == 1 and responses, "Expected exactly one successful hosted provider turn"
         turn = turns[0]
         metadata = responses[-1]["payload"]["metadata"]

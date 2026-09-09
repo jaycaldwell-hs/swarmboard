@@ -137,6 +137,8 @@ def main() -> None:
             os.setuid(account.pw_uid)
         import_database(database, source=source)
         backup_database(database)
+        from .preflight import run_codex_preflight
+        run_codex_preflight(database)
         app = create_hosted_app(settings)
         uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "10000")),
                     workers=1, proxy_headers=True, forwarded_allow_ips="*")

@@ -23,7 +23,10 @@ RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY swarmboard ./swarmboard
-RUN pip install --no-cache-dir . && codex --version
+RUN pip install --no-cache-dir .
+USER swarmboard
+RUN codex --version
+USER root
 
 # Render builds must pass the same deterministic checks as local development.
 # Keep test dependencies and fixtures out of the final service image.

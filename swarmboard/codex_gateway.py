@@ -30,6 +30,33 @@ _PROCESS_ENVIRONMENT = frozenset({
     "SYSTEMROOT", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT",
     "USERPROFILE", "APPDATA", "LOCALAPPDATA",
 })
+_DISABLED_FEATURES = (
+    "shell_tool", "unified_exec", "apps", "plugins", "remote_plugin",
+    "multi_agent", "multi_agent_v2", "memories", "hooks", "goals",
+    "browser_use", "browser_use_external", "computer_use", "in_app_browser",
+    "image_generation", "view_image", "skill_search", "tool_suggest",
+    "code_mode", "code_mode_host", "sleep_tool",
+)
+_CLI_ARGUMENTS = {
+    "--ignore-user-config", "--ephemeral", "--skip-git-repo-check", "--sandbox",
+    "--model", "--json", "--color", "--cd", "--output-schema",
+    "--output-last-message", "--enable", "--disable",
+}
+_SAFE_DIAGNOSTICS = frozenset({
+    "unsupported_feature", "unsupported_argument", "runtime_dependency",
+    "invalid_configuration", "api_authentication", "model_access", "runtime_network",
+    "runtime_permissions", "runtime_resources", "no_structured_events",
+    "upstream_authentication", "upstream_billing", "upstream_rate_limit",
+    "upstream_timeout", "upstream_safety_block",
+    *(f"unsupported_feature:{feature}" for feature in ("skip_host_skill_discovery", *_DISABLED_FEATURES)),
+    *(f"unsupported_argument:{argument}" for argument in _CLI_ARGUMENTS),
+})
+
+
+def safe_codex_diagnostic(error: BaseException) -> str | None:
+    """Return only an exact known diagnostic label, safe for startup status logs."""
+    value = getattr(error, "diagnostic", None)
+    return value if isinstance(value, str) and value in _SAFE_DIAGNOSTICS else None
 
 
 def _runtime_environment() -> tuple[str, dict[str, str]]:
@@ -78,6 +105,55 @@ def _failure_category(events: Sequence[dict[str, Any]]) -> str:
         if category != "safety_block" and found != "provider_error":
             category = found
     return category
+
+
+def _stderr_failure(stderr: bytes) -> tuple[str, str, str] | None:
+    """Map CLI startup diagnostics to fixed labels; never return upstream text."""
+    diagnostic = stderr.decode("utf-8", errors="replace").lower()
+    if not diagnostic.strip():
+        return None
+    if "unknown feature" in diagnostic or "unrecognized feature" in diagnostic:
+        # Only names supplied by this module are eligible for the output. This
+        # helps identify a platform/build mismatch without echoing arbitrary text.
+        feature = next((name for name in ("skip_host_skill_discovery", *_DISABLED_FEATURES)
+                        if re.search(rf"\b{re.escape(name)}\b", diagnostic)), None)
+        label = "unsupported_feature" + (f":{feature}" if feature else "")
+        return "configuration", label, "the installed Codex build does not support a configured feature"
+    if "unexpected argument" in diagnostic or "unrecognized argument" in diagnostic or "unknown option" in diagnostic:
+        argument = next((name for name in sorted(_CLI_ARGUMENTS) if name in diagnostic), None)
+        label = "unsupported_argument" + (f":{argument}" if argument else "")
+        return "configuration", label, "the installed Codex build does not support a configured CLI argument"
+    if any(value in diagnostic for value in (
+        "error while loading shared libraries", "cannot find module", "exec format error",
+        "glibc_", "glibcxx_", "unsupported platform", "unsupported architecture",
+    )):
+        return "configuration", "runtime_dependency", "check the installed Codex binary, Node runtime, and system libraries"
+    if any(value in diagnostic for value in (
+        "error parsing configuration", "error loading configuration", "failed to load config",
+        "error parsing config", "unknown variant", "unknown field", "invalid value",
+    )):
+        return "configuration", "invalid_configuration", "the installed Codex build rejected a runtime configuration value"
+    if any(value in diagnostic for value in ("invalid_api_key", "incorrect api key", "missing api key", "authentication required")):
+        return "authentication", "api_authentication", "check the server API key and model access"
+    if any(value in diagnostic for value in ("model_not_found", "model does not exist", "does not have access to model")):
+        return "provider_error", "model_access", "check API-project access to the requested model"
+    category = _failure_category([{"type": "error", "message": diagnostic}])
+    if category != "provider_error":
+        return category, f"upstream_{category}", "check API-project access, usage limits, and provider status"
+    if any(value in diagnostic for value in (
+        "network is unreachable", "failed to lookup address", "name or service not known",
+        "connection refused", "error sending request", "certificate verify failed",
+        "invalid peer certificate", "dns error",
+    )):
+        return "provider_error", "runtime_network", "check outbound network access and TLS certificates for the Codex process"
+    if any(value in diagnostic for value in (
+        "permission denied", "read-only file system", "operation not permitted",
+        "os error 13", "os error 30",
+    )):
+        return "configuration", "runtime_permissions", "check ownership and write access for the Codex home and temporary directories"
+    if any(value in diagnostic for value in ("no space left on device", "out of memory", "cannot allocate memory")):
+        return "configuration", "runtime_resources", "check available storage and memory for the Codex process"
+    return None
 
 
 class CodexGateway:
@@ -139,13 +215,7 @@ class CodexGateway:
                     "-c", 'forced_login_method="api"',
                     "-c", 'cli_auth_credentials_store="ephemeral"',
                 ])
-            for feature in (
-                "shell_tool", "unified_exec", "apps", "plugins", "remote_plugin",
-                "multi_agent", "multi_agent_v2", "memories", "hooks", "goals",
-                "browser_use", "browser_use_external", "computer_use", "in_app_browser",
-                "image_generation", "view_image", "skill_search", "tool_suggest",
-                "code_mode", "code_mode_host", "sleep_tool",
-            ):
+            for feature in _DISABLED_FEATURES:
                 command.extend(["--disable", feature])
             command.append("-")
             try:
@@ -156,7 +226,7 @@ class CodexGateway:
             except OSError as exc:
                 raise GatewayError("Cannot start Codex; install the CLI or check SWARMBOARD_CODEX_BIN", category="configuration") from exc
             try:
-                stdout, _stderr = await asyncio.wait_for(
+                stdout, stderr = await asyncio.wait_for(
                     process.communicate(prompt.encode("utf-8")), timeout=self.timeout_seconds,
                 )
             except (TimeoutError, asyncio.CancelledError) as exc:
@@ -183,7 +253,16 @@ class CodexGateway:
                 # Classify known structured errors without persisting raw CLI diagnostics.
                 category = _failure_category(events)
                 guidance = "check the server API key and model access" if auth_mode == "api_key" else "check codex login status and model access"
-                raise GatewayError(f"Codex turn failed (exit {process.returncode}, {category}); {guidance}", category=category)
+                diagnostic = _stderr_failure(stderr) if category == "provider_error" else None
+                label = ""
+                if diagnostic is not None:
+                    category, label, guidance = diagnostic
+                elif not events:
+                    label = "no_structured_events"
+                detail = f", {label}" if label else ""
+                failure = GatewayError(f"Codex turn failed (exit {process.returncode}, {category}{detail}); {guidance}", category=category)
+                failure.diagnostic = label or None
+                raise failure
             usage_data = completed.get("usage") or {}
             input_tokens = int(usage_data.get("input_tokens") or 0)
             output_tokens = int(usage_data.get("output_tokens") or 0)

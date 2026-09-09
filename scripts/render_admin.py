@@ -18,10 +18,11 @@ STATE = Path("private/render-deployment.json")
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["inspect", "validate", "create", "status", "logs", "deploy", "stage-import", "clear-import"])
+    parser.add_argument("action", choices=["inspect", "validate", "create", "status", "logs", "deploy", "stage-import", "clear-import", "enable-preflight", "clear-preflight"])
     parser.add_argument("--owner")
     parser.add_argument("--commit")
     parser.add_argument("--snapshot", type=Path, default=Path("private/swarmboard-migration.db"))
+    parser.add_argument("--check-id")
     args = parser.parse_args()
     local = {**dotenv_values(".env"), **os.environ}
     token = local.get("RENDER_API_KEY")
@@ -145,6 +146,15 @@ def main() -> None:
             elif args.action == "clear-import":
                 request("DELETE", f"/services/{service_id}/env-vars/SWARMBOARD_IMPORT_BUNDLE_FILE", private=True)
                 safe({"import_disabled": True, "next": "Redeploy to apply; imported history and backups remain on disk"})
+            elif args.action == "enable-preflight":
+                if not args.check_id:
+                    parser.error("--check-id is required; reuse it to avoid repeating a successful check")
+                request("PUT", f"/services/{service_id}/env-vars/SWARMBOARD_CODEX_PREFLIGHT_ID", private=True,
+                        json={"value": args.check_id})
+                safe({"preflight_enabled": True, "next": "Redeploy to run the check once without creating board history"})
+            elif args.action == "clear-preflight":
+                request("DELETE", f"/services/{service_id}/env-vars/SWARMBOARD_CODEX_PREFLIGHT_ID", private=True)
+                safe({"preflight_disabled": True})
             elif args.action == "deploy":
                 body = {"clearCache": "do_not_clear"}
                 if args.commit:
